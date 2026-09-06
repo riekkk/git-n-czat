@@ -1,6 +1,9 @@
 {
   "title": "Dimp'z Cafe",
   "description": "This responsive POS system offers an elegant interface for managing sales, inventory, and customer interactions, enhancing efficiency for businesses on any device.",
+  "icons": {
+    "icon": "/favicon.png"
+  },
   "robots": {
     "index": false
   },
