@@ -43,6 +43,22 @@ export async function insertProduct(item) {
   return mapProductRow(data)
 }
 
+export async function updateProduct(id, item) {
+  const payload = {
+    name: item.name,
+    price: item.price || 0,
+    category: item.category,
+    stock: item.stock || 0,
+    emoji: item.image || '',
+    image_size: item.imageSize ?? 100,
+    description: item.description || '',
+    unit: item.unit || null,
+  }
+  const { data, error } = await supabase.from('products').update(payload).eq('id', id).select().single()
+  if (error) throw error
+  return mapProductRow(data)
+}
+
 export async function deleteProduct(id) {
   // .select('id') makes a silently-blocked delete (e.g. an RLS policy gap)
   // surface as a real error instead of resolving as if it had succeeded.

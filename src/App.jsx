@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
@@ -191,6 +191,13 @@ function IconUpload() {
     </svg>
   )
 }
+function IconKebab() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" />
+    </svg>
+  )
+}
 
 const NAV_ICONS = {
   dashboard: <IconGrid />,
@@ -303,16 +310,17 @@ function ProductImageBox({ image, imageSize = 100, alt, className = '' }) {
   )
 }
 
-// ─── Add Product modal (Products screen) ───────────────────────────────────
-function AddProductModal({ onClose, onAdd }) {
-  const [name, setName] = useState('')
-  const [price, setPrice] = useState('')
-  const [category, setCategory] = useState('')
-  const [stock, setStock] = useState('')
-  const [image, setImage] = useState('')
-  const [imageSize, setImageSize] = useState(100)
+// ─── Add/Edit Product modal (Products screen) ──────────────────────────────
+function AddProductModal({ onClose, onSubmit, product }) {
+  const isEdit = Boolean(product)
+  const [name, setName] = useState(product?.name || '')
+  const [price, setPrice] = useState(product ? String(product.price) : '')
+  const [category, setCategory] = useState(product?.category || '')
+  const [stock, setStock] = useState(product ? String(product.stock) : '')
+  const [image, setImage] = useState(product?.image || '')
+  const [imageSize, setImageSize] = useState(product?.imageSize ?? 100)
   const [imageError, setImageError] = useState('')
-  const [description, setDescription] = useState('')
+  const [description, setDescription] = useState(product?.description || '')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
 
@@ -334,7 +342,7 @@ function AddProductModal({ onClose, onAdd }) {
     setSubmitting(true)
     setSubmitError('')
     try {
-      await onAdd({
+      await onSubmit({
         name: name.trim(),
         price: parseFloat(price) || 0,
         category: category.trim() || 'Uncategorized',
@@ -345,13 +353,13 @@ function AddProductModal({ onClose, onAdd }) {
         kind: 'product',
       })
     } catch (err) {
-      setSubmitError(err.message || 'Could not save product — try again')
+      setSubmitError(err.message || `Could not ${isEdit ? 'save' : 'add'} product — try again`)
       setSubmitting(false)
     }
   }
 
   return (
-    <Modal title="Add Product" onClose={onClose}>
+    <Modal title={isEdit ? 'Edit Product' : 'Add Product'} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
         <div>
           <label className={labelClass}>Name</label>
@@ -434,7 +442,7 @@ function AddProductModal({ onClose, onAdd }) {
           className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
         >
           {submitting && <Spinner className="w-4 h-4" />}
-          {submitting ? 'Adding…' : 'Add Product'}
+          {submitting ? (isEdit ? 'Saving…' : 'Adding…') : (isEdit ? 'Save Changes' : 'Add Product')}
         </button>
       </form>
     </Modal>
@@ -744,11 +752,55 @@ function WeeklyChart({ sales }) {
   )
 }
 
+// ─── Product card options menu (kebab → Edit / Delete) ─────────────────────
+function ProductCardMenu({ onEdit, onDelete }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handleClickOutside = e => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [open])
+
+  return (
+    <div ref={ref} className="absolute top-2 right-2 z-10">
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="Product options"
+        className="w-7 h-7 rounded-full bg-white/90 border border-[#f0e8d8] flex items-center justify-center text-[#7a6a50] hover:bg-white hover:border-[#ddcca6] transition-all"
+      >
+        <IconKebab />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-32 bg-white rounded-xl border border-[#f0e8d8] shadow-lg py-1 overflow-hidden">
+          <button
+            onClick={() => { setOpen(false); onEdit() }}
+            className="w-full text-left px-3.5 py-2 text-sm text-[#2c2416] hover:bg-[#fff9ea] transition-colors"
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => { setOpen(false); onDelete() }}
+            className="w-full text-left px-3.5 py-2 text-sm text-[#b85c42] hover:bg-[#fdf0ec] transition-colors"
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Products Screen ─────────────────────────────────────────────────────────
-function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onDeleteItem, onAddToCart, cart, onNavigate }) {
+function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateItem, onDeleteItem, onAddToCart, cart, onNavigate }) {
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('All')
   const [showAddModal, setShowAddModal] = useState(false)
+  const [editingProduct, setEditingProduct] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
@@ -863,13 +915,10 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
                   key={product.id}
                   className="relative bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden hover:shadow-[0_4px_20px_rgba(44,36,22,0.10)] hover:-translate-y-0.5 transition-all duration-200"
                 >
-                  <button
-                    onClick={() => { setConfirmDelete(product); setDeleteError('') }}
-                    title="Remove product"
-                    className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full bg-white/90 border border-[#f0e8d8] flex items-center justify-center text-[#b85c42] hover:bg-white hover:border-[#b85c42] transition-all"
-                  >
-                    <IconTrash />
-                  </button>
+                  <ProductCardMenu
+                    onEdit={() => setEditingProduct(product)}
+                    onDelete={() => { setConfirmDelete(product); setDeleteError('') }}
+                  />
                   <ProductImageBox image={product.image} imageSize={product.imageSize} alt={product.name} className="h-24" />
                   <div className="p-4">
                     <div className="flex items-start justify-between gap-1 mb-1">
@@ -910,7 +959,15 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
       {showAddModal && (
         <AddProductModal
           onClose={() => setShowAddModal(false)}
-          onAdd={async item => { await onAddItem(item); setShowAddModal(false) }}
+          onSubmit={async item => { await onAddItem(item); setShowAddModal(false) }}
+        />
+      )}
+
+      {editingProduct && (
+        <AddProductModal
+          product={editingProduct}
+          onClose={() => setEditingProduct(null)}
+          onSubmit={async item => { await onUpdateItem(editingProduct.id, item); setEditingProduct(null) }}
         />
       )}
 
@@ -1910,6 +1967,11 @@ export default function App() {
     setItems(prev => prev.map(i => i.id === id ? { ...i, stock } : i))
   }
 
+  const updateItem = async (id, patch) => {
+    const updated = await api.updateProduct(id, patch)
+    setItems(prev => prev.map(i => i.id === id ? updated : i))
+  }
+
   const deleteItem = async id => {
     await api.deleteProduct(id)
     setItems(prev => prev.filter(i => i.id !== id))
@@ -1961,7 +2023,7 @@ export default function App() {
   const renderScreen = () => {
     switch (screen) {
       case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} />
-      case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onDeleteItem={deleteItem} onAddToCart={addToCart} cart={cart} onNavigate={setScreen} />
+      case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} cart={cart} onNavigate={setScreen} />
       case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} receiptPrintingEnabled={settings.receiptPrinting} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers />
