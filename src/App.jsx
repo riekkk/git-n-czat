@@ -62,7 +62,7 @@ function timeAgo(dateStr) {
 
 const CATEGORY_COLORS = ['#2c2416', '#ddcca6', '#c4ae88', '#e8ddc8', '#a8977e', '#7a6a50', '#b85c42', '#6b9e72']
 
-function resizeImageFile(file, maxDim = 400, quality = 0.82) {
+function resizeImageFile(file, maxDim = 400) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onerror = () => reject(reader.error)
@@ -84,14 +84,10 @@ function resizeImageFile(file, maxDim = 400, quality = 0.82) {
         canvas.width = width
         canvas.height = height
         const ctx = canvas.getContext('2d')
-        // Flatten onto white first — JPEG has no alpha channel, so a
-        // transparent PNG drawn straight onto the canvas's default
-        // transparent-black backdrop would bake in a black background
-        // once toDataURL drops the alpha.
-        ctx.fillStyle = '#ffffff'
-        ctx.fillRect(0, 0, width, height)
+        // PNG preserves the alpha channel — no background fill, so any
+        // transparency in the source survives the resize untouched.
         ctx.drawImage(img, 0, 0, width, height)
-        resolve(canvas.toDataURL('image/jpeg', quality))
+        resolve(canvas.toDataURL('image/png'))
       }
       img.src = reader.result
     }
@@ -302,7 +298,7 @@ function ConfirmDialog({ title, message, confirmLabel = 'Remove', onConfirm, onC
 // the preview always matches the real card exactly ──────────────────────────
 function ProductImageBox({ image, imageSize = 100, alt, className = '' }) {
   return (
-    <div className={`bg-white flex items-center justify-center overflow-hidden ${className}`}>
+    <div className={`flex items-center justify-center overflow-hidden ${className}`}>
       {image ? (
         <img
           src={image}
