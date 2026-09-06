@@ -83,7 +83,14 @@ function resizeImageFile(file, maxDim = 400, quality = 0.82) {
         const canvas = document.createElement('canvas')
         canvas.width = width
         canvas.height = height
-        canvas.getContext('2d').drawImage(img, 0, 0, width, height)
+        const ctx = canvas.getContext('2d')
+        // Flatten onto white first — JPEG has no alpha channel, so a
+        // transparent PNG drawn straight onto the canvas's default
+        // transparent-black backdrop would bake in a black background
+        // once toDataURL drops the alpha.
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, width, height)
+        ctx.drawImage(img, 0, 0, width, height)
         resolve(canvas.toDataURL('image/jpeg', quality))
       }
       img.src = reader.result
