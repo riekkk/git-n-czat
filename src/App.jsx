@@ -302,7 +302,7 @@ function ConfirmDialog({ title, message, confirmLabel = 'Remove', onConfirm, onC
 // the preview always matches the real card exactly ──────────────────────────
 function ProductImageBox({ image, imageSize = 100, alt, className = '' }) {
   return (
-    <div className={`bg-[#fff9ea] flex items-center justify-center overflow-hidden ${className}`}>
+    <div className={`bg-white flex items-center justify-center overflow-hidden ${className}`}>
       {image ? (
         <img
           src={image}
