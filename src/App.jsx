@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import dimpzCafeLogo from '@/imports/dimpzcafe.png'
+import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
 
@@ -17,7 +17,7 @@ const NAV_ITEMS = [
 
 const SETTINGS_STORAGE_KEY = 'dimpzcafe-settings'
 const DEFAULT_SETTINGS = {
-  businessName: 'Dimpz Cafe',
+  businessName: "Dimp'z Cafe",
   email: 'hello@dimpzcafe.com',
   currency: 'PHP',
   taxRate: '8',
@@ -556,7 +556,7 @@ function Dashboard({ onNavigate, cart }) {
       <div className="mb-8">
         <p className="text-sm text-[#a8977e] font-medium mb-1">Friday, 25 July 2026</p>
         <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl md:text-3xl font-semibold text-[#2c2416]">
-          Good morning, Dimpz Cafe
+          Good morning, Dimp'z Cafe
         </h1>
       </div>
 
@@ -1765,9 +1765,9 @@ function Login() {
     <div className="flex items-center justify-center min-h-screen bg-[#fff9ea] p-4">
       <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-[#f0e8d8] p-8">
         <div className="flex flex-col items-center mb-6">
-          <img src={dimpzCafeLogo} alt="Dimpz Cafe" className="w-14 h-14 object-contain mb-3" />
+          <img src={dimpzCafeLogo} alt="Dimp'z Cafe" className="w-14 h-14 object-contain mb-3" />
           <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-xl font-semibold text-[#2c2416]">Staff Login</h1>
-          <p className="text-xs text-[#a8977e] mt-1 tracking-widest uppercase">Dimpz Cafe Point of Sale</p>
+          <p className="text-xs text-[#a8977e] mt-1 tracking-widest uppercase">Dimp'z Cafe Point of Sale</p>
         </div>
         <form onSubmit={submit} className="space-y-4">
           <div>
@@ -1951,11 +1951,11 @@ export default function App() {
           <div className="flex items-center gap-3">
             <img
               src={dimpzCafeLogo}
-              alt="Dimpz Cafe logo"
+              alt="Dimp'z Cafe logo"
               className="w-10 h-10 object-contain rounded-lg bg-white/90 p-0.5"
             />
             <div>
-              <p style={{ fontFamily: 'var(--font-serif)' }} className="text-[#ddcca6] font-semibold text-sm leading-tight">Dimpz Cafe</p>
+              <p style={{ fontFamily: 'var(--font-serif)' }} className="text-[#ddcca6] font-semibold text-sm leading-tight">Dimp'z Cafe</p>
               <p className="text-[10px] text-[#7a6a50] tracking-widest uppercase">Point of Sale</p>
             </div>
           </div>
@@ -1996,7 +1996,7 @@ export default function App() {
         {/* Footer */}
         <div className="px-5 py-4 border-t border-white/10">
           <div className="flex items-center gap-3 mb-3 min-w-0">
-            <img src={dimpzCafeLogo} alt="Dimpz Cafe" className="w-8 h-8 rounded-lg bg-white/90 object-contain p-0.5 shrink-0" />
+            <img src={dimpzCafeLogo} alt="Dimp'z Cafe" className="w-8 h-8 rounded-lg bg-white/90 object-contain p-0.5 shrink-0" />
             <div className="min-w-0">
               <p className="text-xs font-medium text-[#e8ddc8] truncate">{session.user.email}</p>
               <p className="text-[10px] text-[#7a6a50]">Staff · Signed in</p>
@@ -2022,7 +2022,7 @@ export default function App() {
             >
               <IconMenu />
             </button>
-            <img src={dimpzCafeLogo} alt="Dimpz Cafe" className="md:hidden w-7 h-7 object-contain" />
+            <img src={dimpzCafeLogo} alt="Dimp'z Cafe" className="md:hidden w-7 h-7 object-contain" />
             <h2 className="font-semibold text-[#2c2416] text-sm md:text-base">{navLabel}</h2>
           </div>
           <div className="flex items-center gap-3">
