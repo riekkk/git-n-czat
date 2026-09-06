@@ -798,8 +798,80 @@ function ProductCardMenu({ onEdit, onDelete }) {
   )
 }
 
+// ─── Persistent cart sidebar (Products screen, lg+ only) ───────────────────
+function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout }) {
+  const total = cart.reduce((sum, i) => sum + i.price * i.quantity, 0)
+
+  return (
+    <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_12px_rgba(44,36,22,0.06)] sticky top-4 flex flex-col max-h-[calc(100vh-2rem)]">
+      <div className="px-5 py-4 border-b border-[#f5edd6] shrink-0">
+        <h2 className="font-semibold text-[#2c2416]">Your Order</h2>
+      </div>
+
+      {cart.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center py-12 px-5 text-center text-[#a8977e]">
+          <p className="text-3xl mb-3">🛒</p>
+          <p className="text-sm font-medium text-[#2c2416]">Cart is empty</p>
+          <p className="text-xs mt-1">Click "Add" on a product to start an order</p>
+        </div>
+      ) : (
+        <>
+          <div className="flex-1 overflow-y-auto divide-y divide-[#f5edd6]">
+            {cart.map(item => (
+              <div key={item.id} className="flex items-center gap-3 px-5 py-3.5">
+                <ProductImageBox image={item.image} imageSize={item.imageSize} alt={item.name} className="w-10 h-10 rounded-lg shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
+                  <p className="text-xs text-[#a8977e]">{formatPHP(item.price)} each</p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <button
+                      onClick={() => onUpdateQty(item.id, -1)}
+                      className="w-6 h-6 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
+                    >
+                      <IconMinus />
+                    </button>
+                    <span className="w-5 text-center text-xs font-semibold text-[#2c2416]">{item.quantity}</span>
+                    <button
+                      onClick={() => onUpdateQty(item.id, 1)}
+                      className="w-6 h-6 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
+                    >
+                      <IconPlus />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  <span className="text-sm font-semibold text-[#2c2416]">{formatPHP(item.price * item.quantity)}</span>
+                  <button
+                    onClick={() => onRemove(item.id)}
+                    className="text-[#c4ae88] hover:text-[#b85c42] transition-colors"
+                  >
+                    <IconTrash />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="px-5 py-4 border-t border-[#f5edd6] shrink-0">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm text-[#7a6a50]">Total</span>
+              <span style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">{formatPHP(total)}</span>
+            </div>
+            <button
+              onClick={onCheckout}
+              className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors"
+            >
+              Checkout
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── Products Screen ─────────────────────────────────────────────────────────
-function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateItem, onDeleteItem, onAddToCart, cart, onNavigate }) {
+function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateItem, onDeleteItem, onAddToCart, onUpdateQty, onRemove, cart, onNavigate }) {
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('All')
   const [showAddModal, setShowAddModal] = useState(false)
@@ -834,7 +906,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
   const cartCount = cart.reduce((sum, i) => sum + i.quantity, 0)
 
   return (
-    <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
+    <div className="p-4 md:p-6 lg:p-8 max-w-[1600px] mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
         <div>
@@ -851,7 +923,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
           {cartCount > 0 && (
             <button
               onClick={() => onNavigate('checkout')}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#ddcca6] text-[#2c2416] text-sm font-medium hover:bg-[#c4ae88] transition-colors"
+              className="lg:hidden flex items-center gap-2 px-4 py-2 rounded-xl bg-[#ddcca6] text-[#2c2416] text-sm font-medium hover:bg-[#c4ae88] transition-colors"
             >
               <IconCart />
               <span>View Cart</span>
@@ -861,6 +933,8 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
         </div>
       </div>
 
+      <div className="flex flex-col lg:flex-row gap-6">
+      <div className="flex-1 min-w-0">
       {itemsLoading ? (
         <LoadingBlock label="Loading products…" />
       ) : itemsError ? (
@@ -909,7 +983,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
           </div>
 
           {/* Product grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filtered.map(product => {
               const inCart = cart.find(i => i.id === product.id)
               const lowStock = product.stock < 15
@@ -958,6 +1032,12 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
           )}
         </>
       )}
+      </div>
+
+      <div className="hidden lg:block lg:w-80 xl:w-96 shrink-0">
+        <CartSidebar cart={cart} onUpdateQty={onUpdateQty} onRemove={onRemove} onCheckout={() => onNavigate('checkout')} />
+      </div>
+      </div>
 
       {showAddModal && (
         <AddProductModal
@@ -2054,7 +2134,7 @@ export default function App() {
   const renderScreen = () => {
     switch (screen) {
       case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} />
-      case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} cart={cart} onNavigate={setScreen} />
+      case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
       case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} receiptPrintingEnabled={settings.receiptPrinting} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers />
