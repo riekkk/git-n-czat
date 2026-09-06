@@ -453,8 +453,8 @@ function AddProductModal({ onClose, onSubmit, product }) {
 }
 
 // ─── Add Product/Ingredient modal (Inventory screen) ───────────────────────
-function AddInventoryItemModal({ onClose, onAdd }) {
-  const [kind, setKind] = useState('product')
+function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product' }) {
+  const [kind, setKind] = useState(initialKind)
   const [name, setName] = useState('')
   const [category, setCategory] = useState('')
   const [price, setPrice] = useState('')
@@ -1245,6 +1245,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
 
 // ─── Inventory Screen ─────────────────────────────────────────────────────────
 function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateStock, onDeleteItem }) {
+  const [tab, setTab] = useState('product')
   const [editing, setEditing] = useState(null)
   const [editVal, setEditVal] = useState('')
   const [showAddModal, setShowAddModal] = useState(false)
@@ -1253,6 +1254,9 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+
+  const tabItems = items.filter(i => i.kind === tab)
+  const tabLabel = tab === 'product' ? 'Product' : 'Ingredient'
 
   const save = async id => {
     const val = parseInt(editVal, 10)
@@ -1283,17 +1287,17 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
     }
   }
 
-  const lowStockCount = items.filter(i => i.stock < 15).length
+  const lowStockCount = tabItems.filter(i => i.stock < 15).length
 
   return (
     <div className="p-4 md:p-6 lg:p-8 max-w-5xl mx-auto">
       <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
         <div>
           <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416]">Inventory</h1>
-          <p className="text-sm text-[#a8977e] mt-0.5">{items.length} item{items.length !== 1 ? 's' : ''} tracked</p>
+          <p className="text-sm text-[#a8977e] mt-0.5">{tabItems.length} item{tabItems.length !== 1 ? 's' : ''} tracked</p>
         </div>
         <div className="flex items-center gap-3">
-          {items.length > 0 && (
+          {tabItems.length > 0 && (
             <span className="flex items-center gap-1.5 text-xs text-[#b85c42] bg-[#fdf0ec] px-3 py-1.5 rounded-full">
               ⚠ {lowStockCount} low stock
             </span>
@@ -1302,9 +1306,32 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
             onClick={() => setShowAddModal(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#2c2416] text-[#ddcca6] text-sm font-medium hover:bg-[#3d3220] transition-colors"
           >
-            <IconPlus /> Add Product/Ingredient
+            <IconPlus /> Add {tabLabel}
           </button>
         </div>
+      </div>
+
+      <div className="flex gap-2 mb-6">
+        <button
+          onClick={() => setTab('product')}
+          className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            tab === 'product'
+              ? 'bg-[#2c2416] text-[#ddcca6]'
+              : 'bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'
+          }`}
+        >
+          Products
+        </button>
+        <button
+          onClick={() => setTab('ingredient')}
+          className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            tab === 'ingredient'
+              ? 'bg-[#2c2416] text-[#ddcca6]'
+              : 'bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'
+          }`}
+        >
+          Ingredients
+        </button>
       </div>
 
       {stockError && (
@@ -1315,16 +1342,16 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
         <LoadingBlock label="Loading inventory…" />
       ) : itemsError ? (
         <ErrorBlock message={itemsError} onRetry={onRetryItems} />
-      ) : items.length === 0 ? (
+      ) : tabItems.length === 0 ? (
         <div className="text-center py-20 text-[#a8977e] bg-white rounded-2xl border border-[#f0e8d8]">
           <p className="text-4xl mb-3">≡</p>
-          <p className="font-medium text-[#2c2416]">No items yet — add your first product or ingredient</p>
+          <p className="font-medium text-[#2c2416]">No {tabLabel.toLowerCase()}s yet — add your first one</p>
           <p className="text-sm mt-1 mb-5">Track what's on hand as soon as you add it</p>
           <button
             onClick={() => setShowAddModal(true)}
             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2c2416] text-[#ddcca6] text-sm font-medium hover:bg-[#3d3220] transition-colors"
           >
-            <IconPlus /> Add Product/Ingredient
+            <IconPlus /> Add {tabLabel}
           </button>
         </div>
       ) : (
@@ -1342,7 +1369,7 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#f5edd6]">
-                {items.map(p => {
+                {tabItems.map(p => {
                   const status = p.stock === 0 ? 'out' : p.stock < 15 ? 'low' : 'ok'
                   return (
                     <tr key={p.id} className="hover:bg-[#fffcf5] transition-colors">
@@ -1427,6 +1454,7 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
 
       {showAddModal && (
         <AddInventoryItemModal
+          initialKind={tab}
           onClose={() => setShowAddModal(false)}
           onAdd={async item => { await onAddItem(item); setShowAddModal(false) }}
         />
