@@ -1,0 +1,92 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Inter:wght@300;400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-serif: 'Playfair Display', Georgia, serif;
+
+  --color-brand: #ddcca6;
+  --color-brand-dark: #c4ae88;
+  --color-brand-light: #ede3cc;
+  --color-cream: #fff9ea;
+  --color-cream-dark: #f5edd6;
+  --color-bark: #2c2416;
+  --color-bark-mid: #4a3c28;
+  --color-bark-light: #7a6a50;
+  --color-bark-muted: #a8977e;
+  --color-border: #e8ddc8;
+  --color-surface: #ffffff;
+  --color-success: #6b9e72;
+  --color-warning: #c49a3c;
+  --color-danger: #b85c42;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #fff9ea;
+  color: #2c2416;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hide scrollbars by default */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #e8ddc8;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #ddcca6;
+}
+
+/* Smooth scrollbar appearance */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #e8ddc8 transparent;
+}
+
+/* Receipt printing — the .receipt-print element is hidden on screen and is
+   the only thing visible when printing (see the @media print block below). */
+.receipt-print {
+  display: none;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .receipt-print,
+  .receipt-print * {
+    visibility: visible;
+  }
+  .receipt-print {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 80mm;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+}
+
+@page {
+  size: 80mm auto;
+  margin: 0;
+}
