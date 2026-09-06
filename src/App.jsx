@@ -284,6 +284,25 @@ function ConfirmDialog({ title, message, confirmLabel = 'Remove', onConfirm, onC
   )
 }
 
+// ─── Product image box — shared by the catalog card and the form preview so
+// the preview always matches the real card exactly ──────────────────────────
+function ProductImageBox({ image, imageSize = 100, alt, className = '' }) {
+  return (
+    <div className={`bg-[#fff9ea] flex items-center justify-center overflow-hidden ${className}`}>
+      {image ? (
+        <img
+          src={image}
+          alt={alt}
+          className="object-cover"
+          style={{ width: `${imageSize}%`, height: `${imageSize}%` }}
+        />
+      ) : (
+        <span className="text-4xl">🍽️</span>
+      )}
+    </div>
+  )
+}
+
 // ─── Add Product modal (Products screen) ───────────────────────────────────
 function AddProductModal({ onClose, onAdd }) {
   const [name, setName] = useState('')
@@ -291,6 +310,7 @@ function AddProductModal({ onClose, onAdd }) {
   const [category, setCategory] = useState('')
   const [stock, setStock] = useState('')
   const [image, setImage] = useState('')
+  const [imageSize, setImageSize] = useState(100)
   const [imageError, setImageError] = useState('')
   const [description, setDescription] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -320,6 +340,7 @@ function AddProductModal({ onClose, onAdd }) {
         category: category.trim() || 'Uncategorized',
         stock: parseInt(stock, 10) || 0,
         image,
+        imageSize,
         description: description.trim(),
         kind: 'product',
       })
@@ -365,7 +386,7 @@ function AddProductModal({ onClose, onAdd }) {
                 <input type="file" accept="image/*" className="hidden" onChange={handleImageChange} />
               </label>
               {image && (
-                <button type="button" onClick={() => setImage('')} className="text-xs text-[#b85c42] hover:text-[#a04030] transition-colors">
+                <button type="button" onClick={() => { setImage(''); setImageSize(100) }} className="text-xs text-[#b85c42] hover:text-[#a04030] transition-colors">
                   Remove
                 </button>
               )}
@@ -373,6 +394,35 @@ function AddProductModal({ onClose, onAdd }) {
           </div>
           {imageError && <p className="text-xs text-[#b85c42] mt-1.5">{imageError}</p>}
         </div>
+        {image && (
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className={labelClass}>Image Size on Card</label>
+              <span className="text-xs font-medium text-[#7a6a50]">{imageSize}%</span>
+            </div>
+            <input
+              type="range"
+              min="50"
+              max="200"
+              step="5"
+              value={imageSize}
+              onChange={e => setImageSize(Number(e.target.value))}
+              className="w-full accent-[#2c2416]"
+            />
+            <div className="flex justify-between text-[10px] text-[#a8977e] mt-1">
+              <span>Small</span>
+              <span>Medium</span>
+              <span>Large</span>
+            </div>
+            <p className="text-xs text-[#a8977e] mt-3 mb-1.5">Card preview</p>
+            <ProductImageBox
+              image={image}
+              imageSize={imageSize}
+              alt="Preview"
+              className="h-28 w-full rounded-xl border border-[#e8ddc8]"
+            />
+          </div>
+        )}
         <div>
           <label className={labelClass}>Description</label>
           <textarea className={inputClass} rows={2} value={description} onChange={e => setDescription(e.target.value)} placeholder="Short description" />
@@ -820,13 +870,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
                   >
                     <IconTrash />
                   </button>
-                  <div className="bg-[#fff9ea] flex items-center justify-center h-24 overflow-hidden">
-                    {product.image ? (
-                      <img src={product.image} alt={product.name} className="w-full h-full object-cover" />
-                    ) : (
-                      <span className="text-4xl">🍽️</span>
-                    )}
-                  </div>
+                  <ProductImageBox image={product.image} imageSize={product.imageSize} alt={product.name} className="h-24" />
                   <div className="p-4">
                     <div className="flex items-start justify-between gap-1 mb-1">
                       <p className="text-sm font-semibold text-[#2c2416] leading-snug">{product.name}</p>
