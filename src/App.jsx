@@ -293,8 +293,8 @@ function ProductImageBox({ image, imageSize = 100, alt, className = '' }) {
         <img
           src={image}
           alt={alt}
-          className="object-cover"
-          style={{ width: `${imageSize}%`, height: `${imageSize}%` }}
+          className="w-full h-full object-contain"
+          style={{ transform: `scale(${imageSize / 100})` }}
         />
       ) : (
         <span className="text-4xl">🍽️</span>
