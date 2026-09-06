@@ -808,64 +808,54 @@ function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout }) {
         <h2 className="font-semibold text-[#2c2416]">Your Order</h2>
       </div>
 
-      {cart.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center py-12 px-5 text-center text-[#a8977e]">
-          <p className="text-3xl mb-3">🛒</p>
-          <p className="text-sm font-medium text-[#2c2416]">Cart is empty</p>
-          <p className="text-xs mt-1">Click "Add" on a product to start an order</p>
-        </div>
-      ) : (
-        <>
-          <div className="flex-1 overflow-y-auto divide-y divide-[#f5edd6]">
-            {cart.map(item => (
-              <div key={item.id} className="flex items-center gap-3 px-5 py-3.5">
-                <ProductImageBox image={item.image} imageSize={item.imageSize} alt={item.name} className="w-10 h-10 rounded-lg shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
-                  <p className="text-xs text-[#a8977e]">{formatPHP(item.price)} each</p>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <button
-                      onClick={() => onUpdateQty(item.id, -1)}
-                      className="w-6 h-6 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
-                    >
-                      <IconMinus />
-                    </button>
-                    <span className="w-5 text-center text-xs font-semibold text-[#2c2416]">{item.quantity}</span>
-                    <button
-                      onClick={() => onUpdateQty(item.id, 1)}
-                      className="w-6 h-6 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
-                    >
-                      <IconPlus />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex flex-col items-end gap-1.5 shrink-0">
-                  <span className="text-sm font-semibold text-[#2c2416]">{formatPHP(item.price * item.quantity)}</span>
-                  <button
-                    onClick={() => onRemove(item.id)}
-                    className="text-[#c4ae88] hover:text-[#b85c42] transition-colors"
-                  >
-                    <IconTrash />
-                  </button>
-                </div>
+      <div className="flex-1 overflow-y-auto divide-y divide-[#f5edd6]">
+        {cart.map(item => (
+          <div key={item.id} className="flex items-center gap-3 px-5 py-3.5">
+            <ProductImageBox image={item.image} imageSize={item.imageSize} alt={item.name} className="w-10 h-10 rounded-lg shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
+              <p className="text-xs text-[#a8977e]">{formatPHP(item.price)} each</p>
+              <div className="flex items-center gap-2 mt-1.5">
+                <button
+                  onClick={() => onUpdateQty(item.id, -1)}
+                  className="w-6 h-6 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
+                >
+                  <IconMinus />
+                </button>
+                <span className="w-5 text-center text-xs font-semibold text-[#2c2416]">{item.quantity}</span>
+                <button
+                  onClick={() => onUpdateQty(item.id, 1)}
+                  className="w-6 h-6 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
+                >
+                  <IconPlus />
+                </button>
               </div>
-            ))}
-          </div>
-
-          <div className="px-5 py-4 border-t border-[#f5edd6] shrink-0">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-sm text-[#7a6a50]">Total</span>
-              <span style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">{formatPHP(total)}</span>
             </div>
-            <button
-              onClick={onCheckout}
-              className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors"
-            >
-              Checkout
-            </button>
+            <div className="flex flex-col items-end gap-1.5 shrink-0">
+              <span className="text-sm font-semibold text-[#2c2416]">{formatPHP(item.price * item.quantity)}</span>
+              <button
+                onClick={() => onRemove(item.id)}
+                className="text-[#c4ae88] hover:text-[#b85c42] transition-colors"
+              >
+                <IconTrash />
+              </button>
+            </div>
           </div>
-        </>
-      )}
+        ))}
+      </div>
+
+      <div className="px-5 py-4 border-t border-[#f5edd6] shrink-0">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-[#7a6a50]">Total</span>
+          <span style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">{formatPHP(total)}</span>
+        </div>
+        <button
+          onClick={onCheckout}
+          className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors"
+        >
+          Checkout
+        </button>
+      </div>
     </div>
   )
 }
@@ -1034,9 +1024,11 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
       )}
       </div>
 
-      <div className="hidden lg:block lg:w-80 xl:w-96 shrink-0">
-        <CartSidebar cart={cart} onUpdateQty={onUpdateQty} onRemove={onRemove} onCheckout={() => onNavigate('checkout')} />
-      </div>
+      {cart.length > 0 && (
+        <div className="hidden lg:block lg:w-80 xl:w-96 shrink-0">
+          <CartSidebar cart={cart} onUpdateQty={onUpdateQty} onRemove={onRemove} onCheckout={() => onNavigate('checkout')} />
+        </div>
+      )}
       </div>
 
       {showAddModal && (
