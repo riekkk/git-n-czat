@@ -617,7 +617,14 @@ function Dashboard({ onNavigate, cart }) {
     return () => { supabase.removeChannel(channel) }
   }, [])
 
-  const now = new Date()
+  // Keeps the greeting/date live if the dashboard is left open across a
+  // morning/afternoon/evening boundary (or midnight) during a shift.
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 60000)
+    return () => clearInterval(interval)
+  }, [])
+
   const todaySales = sales.filter(e => isSameDay(new Date(e.created_at), now))
   const todayRevenue = todaySales.reduce((sum, e) => sum + e.total, 0)
   const todayOrders = todaySales.length
@@ -649,13 +656,17 @@ function Dashboard({ onNavigate, cart }) {
 
   const recentSales = [...todaySales].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 10)
 
+  const hour = now.getHours()
+  const timeGreeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening'
+  const dateLabel = `${now.toLocaleDateString('en-US', { weekday: 'long' })}, ${now.getDate()} ${now.toLocaleDateString('en-US', { month: 'long' })} ${now.getFullYear()}`
+
   return (
     <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <p className="text-sm text-[#a8977e] font-medium mb-1">Friday, 25 July 2026</p>
+        <p className="text-sm text-[#a8977e] font-medium mb-1">{dateLabel}</p>
         <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl md:text-3xl font-semibold text-[#2c2416]">
-          Good morning, Dimp'z Cafe
+          {timeGreeting}, Dimp'z Cafe
         </h1>
       </div>
 
