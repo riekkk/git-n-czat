@@ -2212,6 +2212,7 @@ export default function App() {
   const [session, setSession] = useState(undefined) // undefined = checking, null = signed out
   const [screen, setScreen] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [clock, setClock] = useState(() => new Date())
   const [cart, setCart] = useState([])
   const [isMobile, setIsMobile] = useState(false)
   const [items, setItems] = useState([])
@@ -2240,6 +2241,13 @@ export default function App() {
       setSession(newSession)
     })
     return () => listener.subscription.unsubscribe()
+  }, [])
+
+  // Header clock/date — ticks on its own so it stays live without needing
+  // some unrelated re-render to trigger it.
+  useEffect(() => {
+    const interval = setInterval(() => setClock(new Date()), 30000)
+    return () => clearInterval(interval)
   }, [])
 
   const refetchItems = () => {
@@ -2458,8 +2466,8 @@ export default function App() {
             </button>
             {/* Time */}
             <div className="hidden sm:flex flex-col items-end">
-              <span className="text-xs font-medium text-[#2c2416]">{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-              <span className="text-[10px] text-[#a8977e]">Jul 25, 2026</span>
+              <span className="text-xs font-medium text-[#2c2416]">{clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              <span className="text-[10px] text-[#a8977e]">{clock.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
             </div>
           </div>
         </header>
