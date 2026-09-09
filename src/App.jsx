@@ -2,8 +2,15 @@ import { useState, useEffect, useRef } from 'react'
 import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
+import * as XLSX from 'xlsx'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
+import { Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun, HeadingLevel, WidthType } from 'docx'
+import { saveAs } from 'file-saver'
 
 const SUGGESTED_CATEGORIES = ['Coffee', 'Tea', 'Pastry', 'Food', 'Drinks']
+const DRINK_CATEGORIES = new Set(['Coffee', 'Tea', 'Drinks'])
+const PASTRY_FOOD_CATEGORIES = new Set(['Pastry', 'Food'])
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦' },
@@ -36,10 +43,6 @@ function formatPHP(amount) {
 
 function isSameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
-}
-
-function startOfMonth(d) {
-  return new Date(d.getFullYear(), d.getMonth(), 1)
 }
 
 function monthKey(d) {
@@ -187,6 +190,13 @@ function IconSearch() {
     </svg>
   )
 }
+function IconDownload() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  )
+}
 function IconUpload() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -198,6 +208,27 @@ function IconKebab() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
       <circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" />
+    </svg>
+  )
+}
+function IconRefresh() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" /><polyline points="21 3 21 9 15 9" />
+    </svg>
+  )
+}
+function IconTable() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="12" y1="3" x2="12" y2="21" />
+    </svg>
+  )
+}
+function IconFileText() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="16" y2="17" />
     </svg>
   )
 }
@@ -318,6 +349,7 @@ function AddProductModal({ onClose, onSubmit, product }) {
   const isEdit = Boolean(product)
   const [name, setName] = useState(product?.name || '')
   const [price, setPrice] = useState(product ? String(product.price) : '')
+  const [costPrice, setCostPrice] = useState(product?.costPrice ? String(product.costPrice) : '')
   const [category, setCategory] = useState(product?.category || '')
   const [stock, setStock] = useState(product ? String(product.stock) : '')
   const [image, setImage] = useState(product?.image || '')
@@ -348,6 +380,7 @@ function AddProductModal({ onClose, onSubmit, product }) {
       await onSubmit({
         name: name.trim(),
         price: parseFloat(price) || 0,
+        costPrice: parseFloat(costPrice) || 0,
         category: category.trim() || 'Uncategorized',
         stock: parseInt(stock, 10) || 0,
         image,
@@ -368,16 +401,21 @@ function AddProductModal({ onClose, onSubmit, product }) {
           <label className={labelClass}>Name</label>
           <input className={inputClass} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Flat White" required />
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <div>
             <label className={labelClass}>Price (₱)</label>
             <input type="number" min="0" step="0.01" className={inputClass} value={price} onChange={e => setPrice(e.target.value)} placeholder="0.00" required />
           </div>
           <div>
-            <label className={labelClass}>Starting Stock</label>
+            <label className={labelClass}>Cost (₱)</label>
+            <input type="number" min="0" step="0.01" className={inputClass} value={costPrice} onChange={e => setCostPrice(e.target.value)} placeholder="0.00" />
+          </div>
+          <div>
+            <label className={labelClass}>Stock</label>
             <input type="number" min="0" className={inputClass} value={stock} onChange={e => setStock(e.target.value)} placeholder="0" />
           </div>
         </div>
+        <p className="text-xs text-[#a8977e] -mt-2">Cost is what this item costs you to make — used to calculate profit margin in Reports.</p>
         <div>
           <label className={labelClass}>Category</label>
           <input list="add-product-categories" className={inputClass} value={category} onChange={e => setCategory(e.target.value)} placeholder="e.g. Coffee" />
@@ -1620,8 +1658,86 @@ function Customers() {
   )
 }
 
+// ─── Report exports (Excel / PDF / Word) ───────────────────────────────────
+function paymentLabel(method) {
+  return method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : method === 'gcash' ? 'GCash' : (method || '—')
+}
+
+function exportSalesToExcel(sales, businessName) {
+  const rows = sales.map(s => ({
+    'Order ID': String(s.id).slice(0, 8).toUpperCase(),
+    Date: new Date(s.created_at).toLocaleString('en-PH'),
+    Customer: s.customer_name || 'Walk-in',
+    'Payment Method': paymentLabel(s.payment_method),
+    Total: s.total,
+  }))
+  const ws = XLSX.utils.json_to_sheet(rows)
+  ws['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 16 }, { wch: 12 }]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Transactions')
+  XLSX.writeFile(wb, `${businessName || 'transactions'}-report-${Date.now()}.xlsx`)
+}
+
+function exportSalesToPDF(sales, businessName, summary) {
+  const doc = new jsPDF()
+  doc.setFontSize(16)
+  doc.text(`${businessName || 'Transaction Report'}`, 14, 18)
+  doc.setFontSize(10)
+  doc.setTextColor(120, 106, 80)
+  doc.text(`Generated ${new Date().toLocaleString('en-PH')} — ${sales.length} transaction${sales.length !== 1 ? 's' : ''}`, 14, 25)
+  doc.setTextColor(44, 36, 22)
+  doc.setFontSize(11)
+  doc.text(
+    `Total Revenue: ${formatPHP(summary.totalRevenue)}    Net Profit: ${formatPHP(summary.netProfit)}    Margin: ${summary.margin.toFixed(1)}%`,
+    14, 33
+  )
+  autoTable(doc, {
+    startY: 40,
+    head: [['Date', 'Customer', 'Payment', 'Total']],
+    body: sales.map(s => [
+      new Date(s.created_at).toLocaleDateString('en-PH'),
+      s.customer_name || 'Walk-in',
+      paymentLabel(s.payment_method),
+      formatPHP(s.total),
+    ]),
+    headStyles: { fillColor: [44, 36, 22] },
+    styles: { fontSize: 9 },
+  })
+  doc.save(`${businessName || 'transactions'}-report-${Date.now()}.pdf`)
+}
+
+async function exportSalesToWord(sales, businessName, summary) {
+  const headerRow = new TableRow({
+    children: ['Date', 'Customer', 'Payment', 'Total'].map(h =>
+      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: h, bold: true })] })] })
+    ),
+  })
+  const dataRows = sales.map(s => new TableRow({
+    children: [
+      new Paragraph(new Date(s.created_at).toLocaleDateString('en-PH')),
+      new Paragraph(s.customer_name || 'Walk-in'),
+      new Paragraph(paymentLabel(s.payment_method)),
+      new Paragraph(formatPHP(s.total)),
+    ].map(p => new TableCell({ children: [p] })),
+  }))
+
+  const doc = new Document({
+    sections: [{
+      children: [
+        new Paragraph({ text: businessName || 'Transaction Report', heading: HeadingLevel.HEADING1 }),
+        new Paragraph({ text: `Generated ${new Date().toLocaleString('en-PH')} — ${sales.length} transaction${sales.length !== 1 ? 's' : ''}` }),
+        new Paragraph({ text: `Total Revenue: ${formatPHP(summary.totalRevenue)}   Net Profit: ${formatPHP(summary.netProfit)}   Margin: ${summary.margin.toFixed(1)}%` }),
+        new Paragraph({ text: '' }),
+        new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] }),
+      ],
+    }],
+  })
+  const blob = await Packer.toBlob(doc)
+  saveAs(blob, `${businessName || 'transactions'}-report-${Date.now()}.docx`)
+}
+
 // ─── Reports Screen ───────────────────────────────────────────────────────────
-function Reports({ items }) {
+function Reports({ items, businessName }) {
   const [sales, setSales] = useState([])
   const [saleItems, setSaleItems] = useState([])
   const [loading, setLoading] = useState(true)
@@ -1699,14 +1815,16 @@ function Reports({ items }) {
     .map(([cat, revenue]) => ({ cat, revenue, pct: totalCategoryRevenue ? Math.round((revenue / totalCategoryRevenue) * 100) : 0 }))
     .sort((a, b) => b.revenue - a.revenue)
 
-  // Summary row — this-month totals derived from real sales + live inventory
-  const thisMonthStart = startOfMonth(now)
-  const salesThisMonth = sales.filter(s => new Date(s.created_at) >= thisMonthStart)
-  const monthlyRevenue = salesThisMonth.reduce((sum, s) => sum + s.total, 0)
-  const priorCustomers = new Set(sales.filter(s => new Date(s.created_at) < thisMonthStart).map(s => s.customer_name || 'Walk-in'))
-  const thisMonthCustomers = new Set(salesThisMonth.map(s => s.customer_name || 'Walk-in'))
-  const newCustomersCount = Array.from(thisMonthCustomers).filter(c => !priorCustomers.has(c)).length
-  const lowStockCount = items.filter(i => i.stock < 15).length
+  // All-time transaction stats + COGS/profit — the new "Transaction Reports" header section
+  const totalTransactionCount = sales.length
+  const totalRevenue = sales.reduce((sum, s) => sum + s.total, 0)
+  const avgOrderValue = totalTransactionCount ? totalRevenue / totalTransactionCount : 0
+  const totalDrinksQty = saleItems.filter(i => DRINK_CATEGORIES.has(i.category)).reduce((sum, i) => sum + i.qty, 0)
+  const totalPastryFoodQty = saleItems.filter(i => PASTRY_FOOD_CATEGORIES.has(i.category)).reduce((sum, i) => sum + i.qty, 0)
+  const totalCOGS = saleItems.reduce((sum, i) => sum + i.cost * i.qty, 0)
+  const netProfit = totalRevenue - totalCOGS
+  const profitMargin = totalRevenue ? (netProfit / totalRevenue) * 100 : 0
+  const cogsSummary = { totalRevenue, netProfit, margin: profitMargin }
 
   if (loading) {
     return (
@@ -1734,26 +1852,106 @@ function Reports({ items }) {
 
   return (
     <div className="p-4 md:p-6 lg:p-8 max-w-6xl mx-auto">
-      <div className="mb-6">
-        <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416]">Reports</h1>
-        <p className="text-sm text-[#a8977e] mt-0.5">Business performance overview</p>
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4 flex-wrap mb-6">
+        <div>
+          <span className="inline-block text-[10px] font-bold uppercase tracking-widest bg-[#ddcca6] text-[#2c2416] px-3 py-1 rounded-full mb-2">
+            Performance
+          </span>
+          <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-3xl md:text-4xl font-bold uppercase text-[#2c2416] leading-tight">
+            Transaction Reports
+          </h1>
+          <div className="w-14 h-1 rounded-full bg-[#c4ae88] mt-3" />
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={load}
+            title="Reload the latest transaction data"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-[#fdf0ec] text-[#b85c42] hover:bg-[#f9e2db] transition-colors"
+          >
+            <IconRefresh /> Clear ({totalTransactionCount})
+          </button>
+          <button
+            onClick={() => exportSalesToExcel(sales, businessName)}
+            disabled={sales.length === 0}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
+          >
+            <IconTable /> Excel
+          </button>
+          <button
+            onClick={() => exportSalesToPDF(sales, businessName, cogsSummary)}
+            disabled={sales.length === 0}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
+          >
+            <IconFileText /> PDF
+          </button>
+          <button
+            onClick={() => exportSalesToWord(sales, businessName, cogsSummary)}
+            disabled={sales.length === 0}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
+          >
+            <IconDownload /> Word
+          </button>
+        </div>
       </div>
 
-      {/* Summary row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      {/* Transaction stat cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         {[
-          { label: 'Monthly Revenue', value: formatPHP(monthlyRevenue), sub: now.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }), icon: '💰' },
-          { label: 'Total Orders', value: String(salesThisMonth.length), sub: 'This month', icon: '📋' },
-          { label: 'New Customers', value: String(newCustomersCount), sub: 'This month', icon: '👥' },
-          { label: 'Low Stock Items', value: String(lowStockCount), sub: 'Below 15 units', icon: '⚠' },
+          { label: 'Total Transaction Count', value: String(totalTransactionCount), icon: '🧾' },
+          { label: 'Avg Order Value', value: formatPHP(avgOrderValue), icon: '💵' },
+          { label: 'Total Drinks Qty', value: String(totalDrinksQty), icon: '☕' },
+          { label: 'Total Pastry/Food Qty', value: String(totalPastryFoodQty), icon: '🥐' },
+          { label: 'Total Revenue', value: formatPHP(totalRevenue), icon: '📈' },
         ].map((stat, i) => (
           <div key={i} className="bg-white rounded-2xl p-5 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
-            <p className="text-2xl mb-2">{stat.icon}</p>
-            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416]">{stat.value}</p>
-            <p className="text-xs text-[#a8977e] mt-1">{stat.label}</p>
-            <p className="text-xs text-[#c4ae88]">{stat.sub}</p>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e]">{stat.label}</p>
+              <span className="text-lg shrink-0">{stat.icon}</span>
+            </div>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-bold text-[#2c2416]">{stat.value}</p>
           </div>
         ))}
+      </div>
+
+      {/* Profitability & COGS analysis */}
+      <div className="bg-[#fff9ea] border border-[#ecdfc0] rounded-2xl p-5 md:p-6 mb-6">
+        <div className="flex items-center justify-between gap-4 flex-wrap mb-5">
+          <div>
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[#a8783c] mb-1.5">
+              📊 Profitability &amp; COGS Analysis
+            </span>
+            <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">Real Net Profit Comparison</h2>
+            <p className="text-xs text-[#a8977e] mt-1 max-w-md">
+              Compare total sales against product costing (COGS) to calculate your true business earnings.
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="text-center bg-white/70 rounded-xl px-3 py-4 border border-[#ecdfc0]">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Total Sales</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#2c2416]">{formatPHP(totalRevenue)}</p>
+          </div>
+          <div className="text-center bg-white/70 rounded-xl px-3 py-4 border border-[#ecdfc0]">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Total Cost (COGS)</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#b85c42]">{formatPHP(totalCOGS)}</p>
+          </div>
+          <div className="text-center bg-white/70 rounded-xl px-3 py-4 border border-[#ecdfc0]">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Net Profit</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#6b9e72]">{formatPHP(netProfit)}</p>
+          </div>
+          <div className="text-center bg-white/70 rounded-xl px-3 py-4 border border-[#ecdfc0]">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Profit Margin</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#c49a3c]">{profitMargin.toFixed(1)}%</p>
+          </div>
+        </div>
+        {totalCOGS === 0 && (
+          <p className="text-xs text-[#a8783c] mt-4">
+            No product cost data entered yet — Net Profit currently equals Total Sales. Add a Cost price to your products (Edit Product) for accurate COGS and margin.
+          </p>
+        )}
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
@@ -2130,7 +2328,7 @@ export default function App() {
       case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} receiptPrintingEnabled={settings.receiptPrinting} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers />
-      case 'reports': return <Reports items={items} />
+      case 'reports': return <Reports items={items} businessName={settings.businessName} />
       case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} />
       default: return null
     }

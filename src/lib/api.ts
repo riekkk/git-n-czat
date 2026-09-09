@@ -14,6 +14,7 @@ function mapProductRow(row) {
     stock: row.stock,
     image: row.emoji || '',
     imageSize: row.image_size ?? 100,
+    costPrice: Number(row.cost_price) || 0,
     description: row.description || '',
     kind: row.kind || 'product',
     unit: row.unit || '',
@@ -34,6 +35,7 @@ export async function insertProduct(item) {
     stock: item.stock || 0,
     emoji: item.image || '',
     image_size: item.imageSize ?? 100,
+    cost_price: item.costPrice || 0,
     description: item.description || '',
     kind: item.kind || 'product',
     unit: item.unit || null,
@@ -51,6 +53,7 @@ export async function updateProduct(id, item) {
     stock: item.stock || 0,
     emoji: item.image || '',
     image_size: item.imageSize ?? 100,
+    cost_price: item.costPrice || 0,
     description: item.description || '',
     unit: item.unit || null,
   }
@@ -143,21 +146,24 @@ export async function fetchRecentSales(daysBack = 7) {
 export async function fetchAllSales() {
   const { data, error } = await supabase
     .from('sales')
-    .select('id, customer_name, total, created_at')
+    .select('id, customer_name, total, payment_method, created_at')
     .order('created_at', { ascending: true })
   if (error) throw error
   return data.map(s => ({ ...s, total: Number(s.total) }))
 }
 
-// Reports: all-time sale line items joined to product category (for Top
-// Products + Category Breakdown).
+// Reports: all-time sale line items joined to product category + cost (for
+// Top Products, Category Breakdown, and COGS/profit).
 export async function fetchAllSaleItemsWithCategory() {
-  const { data, error } = await supabase.from('sale_items').select('product_name, quantity, unit_price, products(category)')
+  const { data, error } = await supabase.from('sale_items').select('product_name, quantity, unit_price, products(category, cost_price)')
   if (error) throw error
   return data.map(item => ({
     name: item.product_name,
     qty: item.quantity,
     price: Number(item.unit_price),
     category: item.products?.category || 'Uncategorized',
+    // Cost as of now, not at time of sale — the schema doesn't snapshot
+    // historical cost, so this is today's cost_price applied retroactively.
+    cost: Number(item.products?.cost_price) || 0,
   }))
 }
