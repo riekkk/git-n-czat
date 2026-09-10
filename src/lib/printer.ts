@@ -80,11 +80,14 @@ function wrapLine(text: string, width = RECEIPT_WIDTH): string {
   return text.length <= width ? `${text}\n` : `${text.slice(0, width)}\n${text.slice(width)}\n`
 }
 
-function buildReceiptText(order: ReceiptOrder): string {
+function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   const width = RECEIPT_WIDTH
   const divider = `${'-'.repeat(width)}\n`
   const parts: string[] = [INIT]
 
+  if (copyLabel) {
+    parts.push(centerLine(copyLabel, width))
+  }
   parts.push(centerLine((order.businessName || 'Receipt').toUpperCase(), width))
   parts.push(centerLine(
     new Date(order.createdAt || Date.now()).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }),
@@ -111,7 +114,8 @@ function buildReceiptText(order: ReceiptOrder): string {
   parts.push('\n')
   parts.push(centerLine('Thank you for your purchase!', width))
   parts.push(centerLine('Please come again', width))
-  parts.push('\n\n\n')
+  // Extra clearance so the cutter doesn't slice through the last text line.
+  parts.push('\n\n\n\n\n')
   parts.push(FULL_CUT)
 
   return parts.join('')
@@ -135,9 +139,14 @@ export async function printReceipt(order: ReceiptOrder): Promise<void> {
       host: PRINTER_HOST,
       port: { passthrough: PRINTER_PORT },
     })
+    // One customer copy, one for the café's own records — sent as a single
+    // print job (one raw socket connection) rather than two separate
+    // qz.print() calls, since that's simpler and more reliable with this
+    // printer/QZ Tray setup than reconnecting twice per transaction.
     const data = [
       { type: 'raw', format: 'plain', data: KICK_DRAWER },
-      { type: 'raw', format: 'plain', data: buildReceiptText(order) },
+      { type: 'raw', format: 'plain', data: buildReceiptText(order, 'CUSTOMER COPY') },
+      { type: 'raw', format: 'plain', data: buildReceiptText(order, 'CAFE COPY') },
     ]
     await qz.print(config, data)
   } catch (err) {
