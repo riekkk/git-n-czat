@@ -12,6 +12,9 @@ const ESC = '\x1B'
 const GS = '\x1D'
 const INIT = `${ESC}@`
 const FULL_CUT = `${GS}V\x00`
+// Pulses drawer-kick pin 2 (ESC p 0 25 250) — opens a cash drawer wired
+// into the printer's RJ11/RJ12 drawer-kick port.
+const KICK_DRAWER = `${ESC}p\x00\x19\xFA`
 
 export interface ReceiptItem {
   name: string
@@ -132,7 +135,10 @@ export async function printReceipt(order: ReceiptOrder): Promise<void> {
       host: PRINTER_HOST,
       port: { passthrough: PRINTER_PORT },
     })
-    const data = [{ type: 'raw', format: 'plain', data: buildReceiptText(order) }]
+    const data = [
+      { type: 'raw', format: 'plain', data: KICK_DRAWER },
+      { type: 'raw', format: 'plain', data: buildReceiptText(order) },
+    ]
     await qz.print(config, data)
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
