@@ -1224,6 +1224,23 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paid])
 
+  // Auto-fire the thermal print in the background as soon as payment
+  // succeeds — no button click required. The short delay gives the QZ Tray
+  // connection (kicked off fresh right after this state change) a moment
+  // to establish. Reuses handleThermalPrint's own printingThermal/
+  // thermalPrintError state, so a failure here shows the same inline error
+  // the manual button would, and the manual button doubles as a backup —
+  // it's disabled while this is in flight, so there's no double-print race,
+  // but stays available afterward for a reprint or a second copy.
+  useEffect(() => {
+    if (!paid || !completedSale) return
+    const timer = setTimeout(() => {
+      handleThermalPrint()
+    }, 400)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paid])
+
   if (paid) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] p-8 text-center">
