@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
+import { printReceipt } from '@/lib/printer'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -1159,6 +1160,8 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
   const [charging, setCharging] = useState(false)
   const [chargeError, setChargeError] = useState('')
   const [completedSale, setCompletedSale] = useState(null)
+  const [printingThermal, setPrintingThermal] = useState(false)
+  const [thermalPrintError, setThermalPrintError] = useState('')
 
   const subtotal = cart.reduce((sum, i) => sum + i.price * i.quantity, 0)
   const total = subtotal
@@ -1191,6 +1194,28 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
     }
   }
 
+  const handleThermalPrint = async () => {
+    if (!completedSale) return
+    setPrintingThermal(true)
+    setThermalPrintError('')
+    try {
+      await printReceipt({
+        id: completedSale.id,
+        createdAt: completedSale.createdAt,
+        customerName: completedSale.customerName,
+        items: completedSale.items,
+        subtotal: completedSale.subtotal,
+        total: completedSale.total,
+        paymentMethod: completedSale.paymentMethod,
+        businessName,
+      })
+    } catch (err) {
+      setThermalPrintError(err.message || 'Could not print receipt')
+    } finally {
+      setPrintingThermal(false)
+    }
+  }
+
   // Auto-print when the success screen appears, if the Settings toggle is on.
   useEffect(() => {
     if (paid && completedSale && receiptPrintingEnabled) {
@@ -1207,12 +1232,20 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         <p className="text-[#a8977e] mb-1">Total charged: <strong className="text-[#2c2416]">{formatPHP(total)}</strong></p>
         <p className="text-[#a8977e] mb-1">Customer: <strong className="text-[#2c2416]">{customerName.trim() || 'Walk-in'}</strong></p>
         <p className="text-sm text-[#a8977e] mb-8">via {paymentMethod === 'card' ? 'Credit/Debit Card' : paymentMethod === 'cash' ? 'Cash' : 'GCash'}</p>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap justify-center">
           <button
             onClick={() => window.print()}
             className="px-6 py-3 rounded-xl border border-[#e8ddc8] text-[#7a6a50] font-medium hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-colors"
           >
             Print Receipt
+          </button>
+          <button
+            onClick={handleThermalPrint}
+            disabled={printingThermal}
+            className="flex items-center gap-2 px-6 py-3 rounded-xl border border-[#e8ddc8] text-[#7a6a50] font-medium hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-colors disabled:opacity-60"
+          >
+            {printingThermal && <Spinner className="w-4 h-4" />}
+            {printingThermal ? 'Printing…' : 'Print Thermal Receipt'}
           </button>
           <button
             onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setCompletedSale(null) }}
@@ -1221,6 +1254,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
             New Order
           </button>
         </div>
+        {thermalPrintError && <p className="text-xs text-[#b85c42] mt-3 max-w-sm">{thermalPrintError}</p>}
         {completedSale && (
           <Receipt
             businessName={businessName}
