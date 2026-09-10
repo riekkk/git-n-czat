@@ -2,7 +2,7 @@ import qz from 'qz-tray'
 
 // Single source of truth for the printer's address — change here (or via
 // the VITE_PRINTER_HOST/VITE_PRINTER_PORT env vars) if it ever changes.
-const PRINTER_HOST = import.meta.env.VITE_PRINTER_HOST || '192.168.123.105'
+const PRINTER_HOST = import.meta.env.VITE_PRINTER_HOST || '192.168.254.120'
 const PRINTER_PORT = Number(import.meta.env.VITE_PRINTER_PORT) || 9100
 
 // 80mm paper, Font A — the standard 48-character width for this printer class.
