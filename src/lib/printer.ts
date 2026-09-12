@@ -1,9 +1,10 @@
-import qz from 'qz-tray'
-
-// Single source of truth for the printer's address — change here (or via
-// the VITE_PRINTER_HOST/VITE_PRINTER_PORT env vars) if it ever changes.
-const PRINTER_HOST = import.meta.env.VITE_PRINTER_HOST || '192.168.254.120'
-const PRINTER_PORT = Number(import.meta.env.VITE_PRINTER_PORT) || 9100
+// PrintNode cloud API — chosen over QZ Tray specifically because QZ Tray
+// only works on the same device as the browser (it talks to a local
+// WebSocket), whereas PrintNode's REST API lets any device (Mac, iPad,
+// etc.) trigger a print on the same registered printer.
+const PRINTNODE_API_KEY = import.meta.env.VITE_PRINTNODE_API_KEY
+const PRINTNODE_PRINTER_ID = 75810640
+const PRINTNODE_URL = 'https://api.printnode.com/printjobs'
 
 // 80mm paper, Font A — the standard 48-character width for this printer class.
 const RECEIPT_WIDTH = 48
@@ -31,28 +32,6 @@ export interface ReceiptOrder {
   total: number
   paymentMethod?: string
   businessName?: string
-}
-
-let connected = false
-let connecting: Promise<void> | null = null
-
-/** Connects to the local QZ Tray WebSocket, once per session. */
-export async function connectPrinter(): Promise<void> {
-  if (connected || qz.websocket.isActive()) {
-    connected = true
-    return
-  }
-  if (connecting) {
-    return connecting
-  }
-  connecting = qz.websocket.connect().then(() => {
-    connected = true
-  })
-  try {
-    await connecting
-  } finally {
-    connecting = null
-  }
 }
 
 // The peso sign (₱, U+20B1) isn't in the code pages most ESC/POS thermal
@@ -121,36 +100,58 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   return parts.join('')
 }
 
+// btoa treats a string as raw bytes (each char code 0-255 -> one output
+// byte), which is exactly what our ESC/POS control codes need — unlike
+// UTF-8 encoding, which would re-encode any byte above 0x7F (e.g. the 0xFA
+// in the drawer-kick command) into a multi-byte sequence and corrupt it.
+// Free-text input (customer/item names) could contain a stray character
+// outside that range, so those get swapped for '?' first rather than
+// throwing and failing the whole print job.
+function toBase64(raw: string): string {
+  const safe = raw.replace(/[^\x00-\xFF]/g, '?')
+  return btoa(safe)
+}
+
 /**
- * Prints a receipt to the thermal printer over raw ESC/POS via QZ Tray.
- * Throws a specific, staff-readable error on failure — callers should
- * catch it and show the message (QZ Tray not running vs. printer
- * unreachable are surfaced differently since they need different fixes).
+ * Prints a receipt via the PrintNode cloud API. Throws a specific,
+ * staff-readable error on failure — callers should catch it and show the
+ * message (missing API key vs. a failed API call are surfaced differently
+ * since they need different fixes).
  */
 export async function printReceipt(order: ReceiptOrder): Promise<void> {
-  try {
-    await connectPrinter()
-  } catch {
-    throw new Error('Could not connect to QZ Tray. Make sure QZ Tray is running on this computer, then try again.')
+  if (!PRINTNODE_API_KEY) {
+    throw new Error('Printing is not configured — missing VITE_PRINTNODE_API_KEY.')
   }
 
+  // One customer copy, one for the café's own records, plus the drawer
+  // kick — sent as a single raw byte stream/print job rather than three
+  // separate API calls, since the printer processes them sequentially
+  // either way (kick drawer, print + cut, print + cut).
+  const raw = KICK_DRAWER + buildReceiptText(order, 'CUSTOMER COPY') + buildReceiptText(order, 'CAFE COPY')
+
+  let response: Response
   try {
-    const config = qz.configs.create({
-      host: PRINTER_HOST,
-      port: { passthrough: PRINTER_PORT },
+    response = await fetch(PRINTNODE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Basic ${btoa(`${PRINTNODE_API_KEY}:`)}`,
+      },
+      body: JSON.stringify({
+        printerId: PRINTNODE_PRINTER_ID,
+        title: `Receipt${order.id ? ` #${order.id.slice(0, 8).toUpperCase()}` : ''}`,
+        contentType: 'raw_base64',
+        content: toBase64(raw),
+        source: order.businessName || 'POS',
+      }),
     })
-    // One customer copy, one for the café's own records — sent as a single
-    // print job (one raw socket connection) rather than two separate
-    // qz.print() calls, since that's simpler and more reliable with this
-    // printer/QZ Tray setup than reconnecting twice per transaction.
-    const data = [
-      { type: 'raw', format: 'plain', data: KICK_DRAWER },
-      { type: 'raw', format: 'plain', data: buildReceiptText(order, 'CUSTOMER COPY') },
-      { type: 'raw', format: 'plain', data: buildReceiptText(order, 'CAFE COPY') },
-    ]
-    await qz.print(config, data)
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
-    throw new Error(`Could not print — check that the printer at ${PRINTER_HOST}:${PRINTER_PORT} is powered on and connected to the network. (${detail})`)
+    throw new Error(`Could not reach PrintNode — check your internet connection. (${detail})`)
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    throw new Error(`PrintNode could not print (HTTP ${response.status}) — check the printer is online in PrintNode.${body ? ` Details: ${body}` : ''}`)
   }
 }
