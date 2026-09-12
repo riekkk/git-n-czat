@@ -1153,7 +1153,7 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
 }
 
 // ─── Checkout Screen ──────────────────────────────────────────────────────────
-function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName, receiptPrintingEnabled }) {
+function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName }) {
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('card')
   const [paid, setPaid] = useState(false)
@@ -1216,18 +1216,8 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
     }
   }
 
-  // Auto-print when the success screen appears, if the Settings toggle is on.
-  useEffect(() => {
-    if (paid && completedSale && receiptPrintingEnabled) {
-      window.print()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paid])
-
   // Auto-fire the thermal print in the background as soon as payment
-  // succeeds — no button click required. The short delay gives the QZ Tray
-  // connection (kicked off fresh right after this state change) a moment
-  // to establish. Reuses handleThermalPrint's own printingThermal/
+  // succeeds — no button click required. Reuses handleThermalPrint's own printingThermal/
   // thermalPrintError state, so a failure here shows the same inline error
   // the manual button would, and the manual button doubles as a backup —
   // it's disabled while this is in flight, so there's no double-print race,
@@ -2395,7 +2385,7 @@ export default function App() {
     switch (screen) {
       case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} />
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
-      case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} receiptPrintingEnabled={settings.receiptPrinting} />
+      case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers />
       case 'reports': return <Reports items={items} businessName={settings.businessName} />
