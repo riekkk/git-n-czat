@@ -152,6 +152,16 @@ export async function fetchAllSales() {
   return data.map(s => ({ ...s, total: Number(s.total) }))
 }
 
+// Reports: permanently deletes all transaction history. sale_items are
+// removed first since they carry a foreign key to sales.
+export async function clearAllSales() {
+  const ZERO_UUID = '00000000-0000-0000-0000-000000000000'
+  const { error: itemsError } = await supabase.from('sale_items').delete().neq('sale_id', ZERO_UUID)
+  if (itemsError) throw itemsError
+  const { error: salesError } = await supabase.from('sales').delete().neq('id', ZERO_UUID)
+  if (salesError) throw salesError
+}
+
 // Reports: all-time sale line items joined to product category + cost (for
 // Top Products, Category Breakdown, and COGS/profit).
 export async function fetchAllSaleItemsWithCategory() {

@@ -3,6 +3,7 @@ import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
 import { printReceipt } from '@/lib/printer'
+import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from '@/lib/categories'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -10,8 +11,6 @@ import { Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun, Headi
 import { saveAs } from 'file-saver'
 
 const SUGGESTED_CATEGORIES = ['Coffee', 'Tea', 'Pastry', 'Food', 'Drinks']
-const DRINK_CATEGORIES = new Set(['Coffee', 'Tea', 'Drinks'])
-const PASTRY_FOOD_CATEGORIES = new Set(['Pastry', 'Food'])
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦' },
@@ -1153,7 +1152,7 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
 }
 
 // ─── Checkout Screen ──────────────────────────────────────────────────────────
-function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName }) {
+function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName, onNavigate }) {
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('card')
   const [paid, setPaid] = useState(false)
@@ -1181,7 +1180,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         id: sale?.id,
         createdAt: sale?.created_at || new Date().toISOString(),
         customerName: resolvedCustomerName,
-        items: cart.map(i => ({ name: i.name, qty: i.quantity, price: i.price })),
+        items: cart.map(i => ({ name: i.name, qty: i.quantity, price: i.price, category: i.category })),
         subtotal,
         total,
         paymentMethod,
@@ -1255,7 +1254,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
             {printingThermal ? 'Printing…' : 'Print Thermal Receipt'}
           </button>
           <button
-            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setCompletedSale(null) }}
+            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setCompletedSale(null); onNavigate('products') }}
             className="px-8 py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-medium hover:bg-[#3d3220] transition-colors"
           >
             New Order
@@ -1789,11 +1788,15 @@ async function exportSalesToWord(sales, businessName, summary) {
 }
 
 // ─── Reports Screen ───────────────────────────────────────────────────────────
-function Reports({ items, businessName }) {
+function Reports({ items, businessName, userEmail }) {
   const [sales, setSales] = useState([])
   const [saleItems, setSaleItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+  const [clearPassword, setClearPassword] = useState('')
+  const [clearError, setClearError] = useState('')
+  const [clearing, setClearing] = useState(false)
   const now = new Date()
 
   const load = () => {
@@ -1828,6 +1831,43 @@ function Reports({ items, businessName }) {
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [])
+
+  // Clearing wipes all transaction history, so it's gated behind re-entering
+  // the signed-in staff account's login password — verified against Supabase
+  // Auth itself (signInWithPassword re-checks the real hashed password)
+  // rather than a client-side comparison, so it can't be bypassed by reading
+  // the source. This only confirms intent/authorization for the account
+  // already signed in; it doesn't restrict which staff accounts can do it.
+  const handleClearConfirm = async () => {
+    if (!userEmail) {
+      setClearError('No signed-in account to verify against')
+      return
+    }
+    setClearing(true)
+    setClearError('')
+    try {
+      const { error: authError } = await supabase.auth.signInWithPassword({ email: userEmail, password: clearPassword })
+      if (authError) {
+        setClearError('Incorrect password')
+        return
+      }
+      await api.clearAllSales()
+      setSales([])
+      setSaleItems([])
+      setShowClearConfirm(false)
+      setClearPassword('')
+    } catch (err) {
+      setClearError(err.message || 'Could not clear transaction reports')
+    } finally {
+      setClearing(false)
+    }
+  }
+
+  const closeClearConfirm = () => {
+    setShowClearConfirm(false)
+    setClearPassword('')
+    setClearError('')
+  }
 
   // Top products — aggregated from real sale line items
   const productMap = new Map()
@@ -1903,6 +1943,7 @@ function Reports({ items, businessName }) {
   }
 
   return (
+    <>
     <div className="p-4 md:p-6 lg:p-8 max-w-6xl mx-auto">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap mb-6">
@@ -1919,9 +1960,10 @@ function Reports({ items, businessName }) {
         {/* Action buttons */}
         <div className="flex items-center gap-2 flex-wrap">
           <button
-            onClick={load}
-            title="Reload the latest transaction data"
-            className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-[#fdf0ec] text-[#b85c42] hover:bg-[#f9e2db] transition-colors"
+            onClick={() => setShowClearConfirm(true)}
+            disabled={totalTransactionCount === 0}
+            title="Permanently delete all transaction history"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-[#fdf0ec] text-[#b85c42] hover:bg-[#f9e2db] transition-colors disabled:opacity-50"
           >
             <IconRefresh /> Clear ({totalTransactionCount})
           </button>
@@ -2096,6 +2138,53 @@ function Reports({ items, businessName }) {
         )}
       </div>
     </div>
+
+    {showClearConfirm && (
+      <Modal title="Clear Transaction Reports" onClose={closeClearConfirm}>
+        <p className="text-sm text-[#7a6a50] mb-4">
+          This permanently deletes all {totalTransactionCount} recorded transaction{totalTransactionCount === 1 ? '' : 's'}. This cannot be undone.
+          Re-enter your account password to confirm.
+        </p>
+        <form
+          onSubmit={e => { e.preventDefault(); handleClearConfirm() }}
+          className="space-y-4"
+        >
+          <div>
+            <label className={labelClass}>Password</label>
+            <input
+              type="password"
+              required
+              autoFocus
+              autoComplete="current-password"
+              className={inputClass}
+              value={clearPassword}
+              onChange={e => setClearPassword(e.target.value)}
+              placeholder="••••••••"
+            />
+          </div>
+          {clearError && <p className="text-xs text-[#b85c42]">{clearError}</p>}
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={closeClearConfirm}
+              disabled={clearing}
+              className="flex-1 py-2.5 rounded-xl border border-[#e8ddc8] text-sm font-medium text-[#7a6a50] hover:border-[#ddcca6] transition-all disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={clearing}
+              className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-[#b85c42] text-white hover:bg-[#a04030] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+            >
+              {clearing && <Spinner className="w-4 h-4" />}
+              {clearing ? 'Clearing…' : 'Clear Everything'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    )}
+    </>
   )
 }
 
@@ -2385,10 +2474,10 @@ export default function App() {
     switch (screen) {
       case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} />
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
-      case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} />
+      case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers />
-      case 'reports': return <Reports items={items} businessName={settings.businessName} />
+      case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} />
       case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} />
       default: return null
     }
