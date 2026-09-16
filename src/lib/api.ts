@@ -153,13 +153,21 @@ export async function fetchAllSales() {
 }
 
 // Reports: permanently deletes all transaction history. sale_items are
-// removed first since they carry a foreign key to sales.
+// removed first since they carry a foreign key to sales. .select('id') on
+// each delete makes a silently-blocked delete (e.g. an RLS policy gap)
+// surface as a real error instead of resolving as if it had succeeded —
+// this table previously had no DELETE policy at all, so the request
+// matched zero rows and returned no error.
 export async function clearAllSales() {
   const ZERO_UUID = '00000000-0000-0000-0000-000000000000'
-  const { error: itemsError } = await supabase.from('sale_items').delete().neq('sale_id', ZERO_UUID)
+  const { error: itemsError } = await supabase.from('sale_items').delete().neq('sale_id', ZERO_UUID).select('id')
   if (itemsError) throw itemsError
-  const { error: salesError } = await supabase.from('sales').delete().neq('id', ZERO_UUID)
+
+  const { data: deletedSales, error: salesError } = await supabase.from('sales').delete().neq('id', ZERO_UUID).select('id')
   if (salesError) throw salesError
+  if (!deletedSales || deletedSales.length === 0) {
+    throw new Error('Transactions were not cleared — you may not have permission')
+  }
 }
 
 // Reports: all-time sale line items joined to product category + cost (for
