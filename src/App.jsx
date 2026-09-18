@@ -1110,7 +1110,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
 }
 
 // ─── Receipt (print-only — hidden on screen, see .receipt-print in index.css) ─
-function Receipt({ businessName, saleId, createdAt, customerName, items, subtotal, total, paymentMethod }) {
+function Receipt({ businessName, saleId, createdAt, customerName, items, subtotal, total, paymentMethod, amountReceived, change }) {
   const paymentLabel = paymentMethod === 'card' ? 'Card' : paymentMethod === 'cash' ? 'Cash' : 'GCash'
   return (
     <div className="receipt-print font-mono text-black bg-white text-[11px] leading-snug w-[80mm] mx-auto p-3">
@@ -1140,6 +1140,18 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
         <span>TOTAL</span>
         <span>{formatPHP(total)}</span>
       </div>
+      {paymentMethod === 'cash' && amountReceived != null && (
+        <>
+          <div className="flex justify-between mt-1">
+            <span>Cash Received</span>
+            <span>{formatPHP(amountReceived)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Change</span>
+            <span>{formatPHP(change)}</span>
+          </div>
+        </>
+      )}
       <div className="flex justify-between mt-1">
         <span>Payment</span>
         <span>{paymentLabel}</span>
@@ -1155,6 +1167,7 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
 function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName, onNavigate }) {
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('card')
+  const [amountReceived, setAmountReceived] = useState('')
   const [paid, setPaid] = useState(false)
   const [charging, setCharging] = useState(false)
   const [chargeError, setChargeError] = useState('')
@@ -1165,7 +1178,12 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
   const subtotal = cart.reduce((sum, i) => sum + i.price * i.quantity, 0)
   const total = subtotal
 
+  const amountReceivedNum = parseFloat(amountReceived) || 0
+  const change = amountReceivedNum - total
+  const cashInsufficient = paymentMethod === 'cash' && (amountReceived === '' || amountReceivedNum < total)
+
   const handleCharge = async () => {
+    if (cashInsufficient) return
     setCharging(true)
     setChargeError('')
     const resolvedCustomerName = customerName.trim() || 'Walk-in'
@@ -1184,6 +1202,8 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         subtotal,
         total,
         paymentMethod,
+        amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
+        change: paymentMethod === 'cash' ? change : undefined,
       })
       setPaid(true)
     } catch (err) {
@@ -1206,6 +1226,8 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         subtotal: completedSale.subtotal,
         total: completedSale.total,
         paymentMethod: completedSale.paymentMethod,
+        amountReceived: completedSale.amountReceived,
+        change: completedSale.change,
         businessName,
       })
     } catch (err) {
@@ -1271,6 +1293,8 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
             subtotal={completedSale.subtotal}
             total={completedSale.total}
             paymentMethod={completedSale.paymentMethod}
+            amountReceived={completedSale.amountReceived}
+            change={completedSale.change}
           />
         )}
       </div>
@@ -1373,7 +1397,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
                 {['card', 'cash', 'gcash'].map(method => (
                   <button
                     key={method}
-                    onClick={() => setPaymentMethod(method)}
+                    onClick={() => { setPaymentMethod(method); setAmountReceived('') }}
                     className={`py-2.5 rounded-xl text-xs font-medium transition-all ${
                       paymentMethod === method
                         ? 'bg-[#2c2416] text-[#ddcca6]'
@@ -1386,12 +1410,39 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
               </div>
             </div>
 
+            {/* Cash tender — only for Cash, live change calculation */}
+            {paymentMethod === 'cash' && (
+              <div className="mb-5">
+                <p className={labelClass}>Amount Received</p>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={amountReceived}
+                  onChange={e => setAmountReceived(e.target.value)}
+                  className={inputClass}
+                />
+                {amountReceived !== '' && (
+                  cashInsufficient ? (
+                    <p className="text-xs text-[#b85c42] mt-2">Insufficient amount</p>
+                  ) : (
+                    <div className="flex justify-between text-sm text-[#7a6a50] mt-2">
+                      <span>Change</span>
+                      <span className="font-semibold text-[#2c2416]">{formatPHP(change)}</span>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+
             {chargeError && <p className="text-xs text-[#b85c42] mb-3 text-center">{chargeError}</p>}
 
             {/* Charge button */}
             <button
               onClick={handleCharge}
-              disabled={charging}
+              disabled={charging || cashInsufficient}
               className="w-full py-4 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold text-base hover:bg-[#3d3220] active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
             >
               {charging && <Spinner className="w-4 h-4" />}
