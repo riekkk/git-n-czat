@@ -91,11 +91,11 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
 
   parts.push(divider)
   parts.push(padLine('Subtotal', formatMoneyForPrint(order.subtotal), width))
-  parts.push(padLine('TOTAL', formatMoneyForPrint(order.total), width))
   if (order.paymentMethod === 'cash' && order.amountReceived != null) {
     parts.push(padLine('Cash Received', formatMoneyForPrint(order.amountReceived), width))
     parts.push(padLine('Change', formatMoneyForPrint(order.change ?? 0), width))
   }
+  parts.push(padLine('TOTAL', formatMoneyForPrint(order.total), width))
   if (order.paymentMethod) {
     parts.push(wrapLine(`Payment: ${paymentLabelForPrint(order.paymentMethod)}`, width))
   }

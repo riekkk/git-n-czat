@@ -82,10 +82,16 @@ export async function updateProductStock(id, previousStock, newStock) {
   if (logError) throw logError
 }
 
-export async function recordSale({ customerName, items, total, paymentMethod }) {
+export async function recordSale({ customerName, items, total, paymentMethod, amountReceived, changeGiven }) {
   const { data: sale, error: saleError } = await supabase
     .from('sales')
-    .insert({ customer_name: customerName || null, total, payment_method: paymentMethod })
+    .insert({
+      customer_name: customerName || null,
+      total,
+      payment_method: paymentMethod,
+      amount_received: paymentMethod === 'cash' ? amountReceived : null,
+      change_given: paymentMethod === 'cash' ? changeGiven : null,
+    })
     .select()
     .single()
   if (saleError) throw saleError
@@ -130,6 +136,7 @@ export async function fetchRecentSales(daysBack = 7) {
     .from('sales')
     .select('id, customer_name, total, created_at, sale_items(quantity)')
     .gte('created_at', start.toISOString())
+    .neq('status', 'voided')
     .order('created_at', { ascending: false })
   if (error) throw error
 
@@ -142,14 +149,21 @@ export async function fetchRecentSales(daysBack = 7) {
   }))
 }
 
-// Reports: all-time sales (for monthly chart + this-month summary stats).
+// Reports: all-time sales (for monthly chart + this-month summary stats, and
+// the transaction list). Includes voided sales — callers filter those out of
+// revenue/analytics but still need them to render the list with a status.
 export async function fetchAllSales() {
   const { data, error } = await supabase
     .from('sales')
-    .select('id, customer_name, total, payment_method, created_at')
+    .select('id, customer_name, total, payment_method, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given')
     .order('created_at', { ascending: true })
   if (error) throw error
-  return data.map(s => ({ ...s, total: Number(s.total) }))
+  return data.map(s => ({
+    ...s,
+    total: Number(s.total),
+    amount_received: s.amount_received != null ? Number(s.amount_received) : null,
+    change_given: s.change_given != null ? Number(s.change_given) : null,
+  }))
 }
 
 // Reports: permanently deletes all transaction history. sale_items are
@@ -171,11 +185,15 @@ export async function clearAllSales() {
 }
 
 // Reports: all-time sale line items joined to product category + cost (for
-// Top Products, Category Breakdown, and COGS/profit).
+// Top Products, Category Breakdown, COGS/profit, and the transaction list's
+// per-order item detail). sale_id/product_id let callers exclude voided
+// sales' items from analytics and restore stock on void/edit.
 export async function fetchAllSaleItemsWithCategory() {
-  const { data, error } = await supabase.from('sale_items').select('product_name, quantity, unit_price, products(category, cost_price)')
+  const { data, error } = await supabase.from('sale_items').select('sale_id, product_id, product_name, quantity, unit_price, products(category, cost_price)')
   if (error) throw error
   return data.map(item => ({
+    saleId: item.sale_id,
+    productId: item.product_id,
     name: item.product_name,
     qty: item.quantity,
     price: Number(item.unit_price),
@@ -184,4 +202,108 @@ export async function fetchAllSaleItemsWithCategory() {
     // historical cost, so this is today's cost_price applied retroactively.
     cost: Number(item.products?.cost_price) || 0,
   }))
+}
+
+// Reports: reverses a completed sale — restores stock for each line item and
+// marks the sale voided (kept for audit, excluded from revenue/analytics)
+// rather than deleting it.
+export async function voidSale(saleId, voidedBy) {
+  const { data: lineItems, error: itemsError } = await supabase
+    .from('sale_items')
+    .select('product_id, quantity')
+    .eq('sale_id', saleId)
+  if (itemsError) throw itemsError
+
+  for (const item of lineItems) {
+    if (!item.product_id) continue // product was deleted since the sale — nothing to restore stock to
+    const { data: product, error: fetchErr } = await supabase.from('products').select('stock').eq('id', item.product_id).maybeSingle()
+    if (fetchErr) throw fetchErr
+    if (!product) continue
+    const newStock = product.stock + item.quantity
+    const { error: stockErr } = await supabase.from('products').update({ stock: newStock }).eq('id', item.product_id)
+    if (stockErr) throw stockErr
+    const { error: logError } = await supabase
+      .from('stock_adjustments')
+      .insert({ product_id: item.product_id, previous_stock: product.stock, new_stock: newStock })
+    if (logError) throw logError
+  }
+
+  const { data, error } = await supabase
+    .from('sales')
+    .update({ status: 'voided', voided_at: new Date().toISOString(), voided_by: voidedBy })
+    .eq('id', saleId)
+    .select('id')
+  if (error) throw error
+  if (!data || data.length === 0) {
+    throw new Error('Transaction was not voided — you may not have permission')
+  }
+}
+
+// Reports: replaces a sale's line items and totals, adjusting stock by the
+// difference between old and new quantities per product, and stamping who
+// edited it and when so the record shows it's no longer the original.
+export async function editSale(saleId, { items, paymentMethod, amountReceived, changeGiven, editedBy }) {
+  const { data: oldItems, error: oldItemsError } = await supabase
+    .from('sale_items')
+    .select('product_id, quantity')
+    .eq('sale_id', saleId)
+  if (oldItemsError) throw oldItemsError
+
+  const oldQtyByProduct = new Map()
+  oldItems.forEach(i => {
+    if (i.product_id) oldQtyByProduct.set(i.product_id, (oldQtyByProduct.get(i.product_id) || 0) + i.quantity)
+  })
+  const newQtyByProduct = new Map()
+  items.forEach(i => {
+    if (i.productId) newQtyByProduct.set(i.productId, (newQtyByProduct.get(i.productId) || 0) + i.qty)
+  })
+
+  const productIds = new Set([...oldQtyByProduct.keys(), ...newQtyByProduct.keys()])
+  for (const productId of productIds) {
+    const delta = (oldQtyByProduct.get(productId) || 0) - (newQtyByProduct.get(productId) || 0)
+    if (delta === 0) continue
+    const { data: product, error: fetchErr } = await supabase.from('products').select('stock').eq('id', productId).maybeSingle()
+    if (fetchErr) throw fetchErr
+    if (!product) continue // product was deleted since the sale
+    const newStock = Math.max(0, product.stock + delta)
+    const { error: stockErr } = await supabase.from('products').update({ stock: newStock }).eq('id', productId)
+    if (stockErr) throw stockErr
+    const { error: logError } = await supabase
+      .from('stock_adjustments')
+      .insert({ product_id: productId, previous_stock: product.stock, new_stock: newStock })
+    if (logError) throw logError
+  }
+
+  const { error: deleteError } = await supabase.from('sale_items').delete().eq('sale_id', saleId)
+  if (deleteError) throw deleteError
+
+  const newTotal = items.reduce((sum, i) => sum + i.price * i.qty, 0)
+  if (items.length > 0) {
+    const lineItems = items.map(i => ({
+      sale_id: saleId,
+      product_id: i.productId || null,
+      product_name: i.name,
+      quantity: i.qty,
+      unit_price: i.price,
+    }))
+    const { error: insertError } = await supabase.from('sale_items').insert(lineItems)
+    if (insertError) throw insertError
+  }
+
+  const { data, error } = await supabase
+    .from('sales')
+    .update({
+      total: newTotal,
+      payment_method: paymentMethod,
+      amount_received: paymentMethod === 'cash' ? amountReceived : null,
+      change_given: paymentMethod === 'cash' ? changeGiven : null,
+      edited_at: new Date().toISOString(),
+      edited_by: editedBy,
+    })
+    .eq('id', saleId)
+    .select('id')
+  if (error) throw error
+  if (!data || data.length === 0) {
+    throw new Error('Transaction was not updated — you may not have permission')
+  }
 }

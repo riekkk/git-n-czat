@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
 import { printReceipt } from '@/lib/printer'
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from '@/lib/categories'
+import { verifyStaffPassword } from '@/lib/auth'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -321,6 +322,113 @@ function ConfirmDialog({ title, message, confirmLabel = 'Remove', onConfirm, onC
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Password-gated confirmation (Void, Edit-unlock, Clear reports) ───────
+// Re-verifies the signed-in staff account's real password (via
+// verifyStaffPassword/Supabase Auth) before letting a destructive or
+// sensitive action through. `onConfirm(password)` should perform the actual
+// action and throw on failure — this shell shows whatever message it throws.
+function PasswordConfirmModal({ title, message, confirmLabel = 'Confirm', onConfirm, onClose }) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const submit = async e => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      await onConfirm(password)
+    } catch (err) {
+      setError(err.message || 'Something went wrong')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      {message && <p className="text-sm text-[#7a6a50] mb-4">{message}</p>}
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label className={labelClass}>Password</label>
+          <input
+            type="password"
+            required
+            autoFocus
+            autoComplete="current-password"
+            className={inputClass}
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="••••••••"
+          />
+        </div>
+        {error && <p className="text-xs text-[#b85c42]">{error}</p>}
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="flex-1 py-2.5 rounded-xl border border-[#e8ddc8] text-sm font-medium text-[#7a6a50] hover:border-[#ddcca6] transition-all disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={loading}
+            className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-[#b85c42] text-white hover:bg-[#a04030] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+          >
+            {loading && <Spinner className="w-4 h-4" />}
+            {loading ? 'Verifying…' : confirmLabel}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+// ─── 3-dot row menu (Void/Edit) ────────────────────────────────────────────
+function TransactionMenu({ onVoid, onEdit }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handleClickOutside = e => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [open])
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="Transaction options"
+        className="w-7 h-7 rounded-full flex items-center justify-center text-[#7a6a50] hover:bg-[#fff9ea] transition-all"
+      >
+        <IconKebab />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-32 bg-white rounded-xl border border-[#f0e8d8] shadow-lg py-1 overflow-hidden z-20">
+          <button
+            onClick={() => { setOpen(false); onEdit() }}
+            className="w-full text-left px-3.5 py-2 text-sm text-[#2c2416] hover:bg-[#fff9ea] transition-colors"
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => { setOpen(false); onVoid() }}
+            className="w-full text-left px-3.5 py-2 text-sm text-[#b85c42] hover:bg-[#fdf0ec] transition-colors"
+          >
+            Void
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -1136,10 +1244,6 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
         <span>Subtotal</span>
         <span>{formatPHP(subtotal)}</span>
       </div>
-      <div className="flex justify-between font-bold text-sm mt-1">
-        <span>TOTAL</span>
-        <span>{formatPHP(total)}</span>
-      </div>
       {paymentMethod === 'cash' && amountReceived != null && (
         <>
           <div className="flex justify-between mt-1">
@@ -1152,6 +1256,10 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
           </div>
         </>
       )}
+      <div className="flex justify-between font-bold text-sm mt-1">
+        <span>TOTAL</span>
+        <span>{formatPHP(total)}</span>
+      </div>
       <div className="flex justify-between mt-1">
         <span>Payment</span>
         <span>{paymentLabel}</span>
@@ -1193,6 +1301,8 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         items: cart.map(i => ({ id: i.id, name: i.name, qty: i.quantity, price: i.price, category: i.category })),
         total,
         paymentMethod,
+        amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
+        changeGiven: paymentMethod === 'cash' ? change : undefined,
       })
       setCompletedSale({
         id: sale?.id,
@@ -1839,15 +1949,176 @@ async function exportSalesToWord(sales, businessName, summary) {
 }
 
 // ─── Reports Screen ───────────────────────────────────────────────────────────
-function Reports({ items, businessName, userEmail }) {
+// ─── Edit transaction (line items, payment method, cash tender) ───────────
+function EditTransactionModal({ sale, items: lineItems, onClose, onSave }) {
+  const [editItems, setEditItems] = useState(() => lineItems.map(i => ({ ...i })))
+  const [paymentMethod, setPaymentMethod] = useState(sale.payment_method)
+  const [amountReceived, setAmountReceived] = useState(sale.amount_received != null ? String(sale.amount_received) : '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const activeItems = editItems.filter(i => i.qty > 0)
+  const total = activeItems.reduce((sum, i) => sum + i.price * i.qty, 0)
+  const amountReceivedNum = parseFloat(amountReceived) || 0
+  const change = amountReceivedNum - total
+  const cashInsufficient = paymentMethod === 'cash' && (amountReceived === '' || amountReceivedNum < total)
+
+  const updateQty = (idx, delta) => {
+    setEditItems(prev => prev.map((it, i) => i === idx ? { ...it, qty: Math.max(0, it.qty + delta) } : it))
+  }
+  const removeItem = idx => {
+    setEditItems(prev => prev.filter((_, i) => i !== idx))
+  }
+
+  const handleSave = async () => {
+    if (activeItems.length === 0) {
+      setError('All items removed — void this transaction instead of saving an empty order.')
+      return
+    }
+    if (cashInsufficient) {
+      setError('Amount received is less than the total')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onSave({
+        items: activeItems.map(i => ({ productId: i.productId, name: i.name, qty: i.qty, price: i.price })),
+        paymentMethod,
+        amountReceived: paymentMethod === 'cash' ? amountReceivedNum : null,
+        changeGiven: paymentMethod === 'cash' ? change : null,
+      })
+    } catch (err) {
+      setError(err.message || 'Could not save changes')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`Edit Order #${String(sale.id).slice(0, 8).toUpperCase()}`} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="divide-y divide-[#f5edd6] border border-[#f0e8d8] rounded-xl overflow-hidden">
+          {editItems.map((item, idx) => (
+            <div key={idx} className={`flex items-center gap-3 px-3.5 py-3 ${item.qty === 0 ? 'opacity-40' : ''}`}>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
+                <p className="text-xs text-[#a8977e]">{formatPHP(item.price)} each</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => updateQty(idx, -1)}
+                  className="w-7 h-7 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
+                >
+                  <IconMinus />
+                </button>
+                <span className="w-6 text-center text-sm font-semibold text-[#2c2416]">{item.qty}</span>
+                <button
+                  type="button"
+                  onClick={() => updateQty(idx, 1)}
+                  className="w-7 h-7 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
+                >
+                  <IconPlus />
+                </button>
+              </div>
+              <span className="w-20 text-right text-sm font-semibold text-[#2c2416] shrink-0">{formatPHP(item.price * item.qty)}</span>
+              <button
+                type="button"
+                onClick={() => removeItem(idx)}
+                className="text-[#c4ae88] hover:text-[#b85c42] transition-colors shrink-0"
+              >
+                <IconTrash />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div>
+          <p className="text-xs text-[#a8977e] font-medium mb-2">Payment Method</p>
+          <div className="grid grid-cols-3 gap-2">
+            {['card', 'cash', 'gcash'].map(method => (
+              <button
+                key={method}
+                type="button"
+                onClick={() => { setPaymentMethod(method); setAmountReceived('') }}
+                className={`py-2.5 rounded-xl text-xs font-medium transition-all ${
+                  paymentMethod === method
+                    ? 'bg-[#2c2416] text-[#ddcca6]'
+                    : 'border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'
+                }`}
+              >
+                {method === 'card' ? '💳 Card' : method === 'cash' ? '💵 Cash' : '📱 GCash'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {paymentMethod === 'cash' && (
+          <div>
+            <p className={labelClass}>Amount Received</p>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              placeholder="0.00"
+              value={amountReceived}
+              onChange={e => setAmountReceived(e.target.value)}
+              className={inputClass}
+            />
+            {amountReceived !== '' && (
+              cashInsufficient ? (
+                <p className="text-xs text-[#b85c42] mt-2">Insufficient amount</p>
+              ) : (
+                <div className="flex justify-between text-sm text-[#7a6a50] mt-2">
+                  <span>Change</span>
+                  <span className="font-semibold text-[#2c2416]">{formatPHP(change)}</span>
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-between font-semibold text-[#2c2416] pt-3 border-t border-[#f5edd6]">
+          <span>New Total</span>
+          <span style={{ fontFamily: 'var(--font-serif)' }} className="text-lg">{formatPHP(total)}</span>
+        </div>
+
+        {error && <p className="text-xs text-[#b85c42]">{error}</p>}
+
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="flex-1 py-2.5 rounded-xl border border-[#e8ddc8] text-sm font-medium text-[#7a6a50] hover:border-[#ddcca6] transition-all disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving || cashInsufficient}
+            className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-[#2c2416] text-[#ddcca6] hover:bg-[#3d3220] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+          >
+            {saving && <Spinner className="w-4 h-4" />}
+            {saving ? 'Saving…' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTransaction }) {
   const [sales, setSales] = useState([])
   const [saleItems, setSaleItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [showClearConfirm, setShowClearConfirm] = useState(false)
-  const [clearPassword, setClearPassword] = useState('')
-  const [clearError, setClearError] = useState('')
-  const [clearing, setClearing] = useState(false)
+  const [voidTarget, setVoidTarget] = useState(null)
+  const [editPasswordTarget, setEditPasswordTarget] = useState(null)
+  const [editingSale, setEditingSale] = useState(null)
   const now = new Date()
 
   const load = () => {
@@ -1883,46 +2154,58 @@ function Reports({ items, businessName, userEmail }) {
     return () => { supabase.removeChannel(channel) }
   }, [])
 
-  // Clearing wipes all transaction history, so it's gated behind re-entering
-  // the signed-in staff account's login password — verified against Supabase
-  // Auth itself (signInWithPassword re-checks the real hashed password)
-  // rather than a client-side comparison, so it can't be bypassed by reading
-  // the source. This only confirms intent/authorization for the account
-  // already signed in; it doesn't restrict which staff accounts can do it.
-  const handleClearConfirm = async () => {
-    if (!userEmail) {
-      setClearError('No signed-in account to verify against')
-      return
-    }
-    setClearing(true)
-    setClearError('')
-    try {
-      const { error: authError } = await supabase.auth.signInWithPassword({ email: userEmail, password: clearPassword })
-      if (authError) {
-        setClearError('Incorrect password')
-        return
-      }
-      await api.clearAllSales()
-      setSales([])
-      setSaleItems([])
-      setShowClearConfirm(false)
-      setClearPassword('')
-    } catch (err) {
-      setClearError(err.message || 'Could not clear transaction reports')
-    } finally {
-      setClearing(false)
-    }
+  // Voided sales are kept for audit but excluded from every revenue/analytics
+  // number below — only "active" (non-voided) sales/items feed those.
+  const voidedSaleIds = new Set(sales.filter(s => s.status === 'voided').map(s => s.id))
+  const activeSales = sales.filter(s => s.status !== 'voided')
+  const activeSaleItems = saleItems.filter(i => !voidedSaleIds.has(i.saleId))
+
+  const itemsBySale = new Map()
+  saleItems.forEach(item => {
+    if (!itemsBySale.has(item.saleId)) itemsBySale.set(item.saleId, [])
+    itemsBySale.get(item.saleId).push(item)
+  })
+  const transactionList = [...sales].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+
+  // Clearing, voiding, and editing all touch financial records, so each is
+  // gated behind re-entering the signed-in staff account's login password —
+  // verified against Supabase Auth itself (verifyStaffPassword) rather than
+  // a client-side comparison, so it can't be bypassed by reading the source.
+  // This only confirms intent/authorization for the account already signed
+  // in; it doesn't restrict which staff accounts can do it.
+  const handleClearConfirm = async password => {
+    await verifyStaffPassword(userEmail, password)
+    await api.clearAllSales()
+    setSales([])
+    setSaleItems([])
+    setShowClearConfirm(false)
   }
 
-  const closeClearConfirm = () => {
-    setShowClearConfirm(false)
-    setClearPassword('')
-    setClearError('')
+  const handleVoidConfirm = async password => {
+    await verifyStaffPassword(userEmail, password)
+    await onVoidTransaction(voidTarget.id, userEmail)
+    setSales(prev => prev.map(s => s.id === voidTarget.id
+      ? { ...s, status: 'voided', voided_at: new Date().toISOString(), voided_by: userEmail }
+      : s
+    ))
+    setVoidTarget(null)
+  }
+
+  const handleEditPasswordConfirm = async password => {
+    await verifyStaffPassword(userEmail, password)
+    setEditingSale(editPasswordTarget)
+    setEditPasswordTarget(null)
+  }
+
+  const handleSaveEdit = async payload => {
+    await onEditTransaction(editingSale.id, { ...payload, editedBy: userEmail })
+    setEditingSale(null)
+    load()
   }
 
   // Top products — aggregated from real sale line items
   const productMap = new Map()
-  saleItems.forEach(item => {
+  activeSaleItems.forEach(item => {
     const entry = productMap.get(item.name) || { name: item.name, sales: 0, revenue: 0 }
     entry.sales += item.qty
     entry.revenue += item.price * item.qty
@@ -1937,7 +2220,7 @@ function Reports({ items, businessName, userEmail }) {
     return { key: monthKey(d), label: d.toLocaleDateString('en-US', { month: 'short' }) }
   })
   const revenueByMonth = {}
-  sales.forEach(sale => {
+  activeSales.forEach(sale => {
     const key = monthKey(new Date(sale.created_at))
     revenueByMonth[key] = (revenueByMonth[key] || 0) + sale.total
   })
@@ -1948,7 +2231,7 @@ function Reports({ items, businessName, userEmail }) {
   // Category breakdown — % of revenue per category from actual sale line items
   const categoryRevenue = new Map()
   let totalCategoryRevenue = 0
-  saleItems.forEach(item => {
+  activeSaleItems.forEach(item => {
     const cat = item.category || 'Uncategorized'
     const rev = item.price * item.qty
     categoryRevenue.set(cat, (categoryRevenue.get(cat) || 0) + rev)
@@ -1959,12 +2242,12 @@ function Reports({ items, businessName, userEmail }) {
     .sort((a, b) => b.revenue - a.revenue)
 
   // All-time transaction stats + COGS/profit — the new "Transaction Reports" header section
-  const totalTransactionCount = sales.length
-  const totalRevenue = sales.reduce((sum, s) => sum + s.total, 0)
+  const totalTransactionCount = activeSales.length
+  const totalRevenue = activeSales.reduce((sum, s) => sum + s.total, 0)
   const avgOrderValue = totalTransactionCount ? totalRevenue / totalTransactionCount : 0
-  const totalDrinksQty = saleItems.filter(i => DRINK_CATEGORIES.has(i.category)).reduce((sum, i) => sum + i.qty, 0)
-  const totalPastryFoodQty = saleItems.filter(i => PASTRY_FOOD_CATEGORIES.has(i.category)).reduce((sum, i) => sum + i.qty, 0)
-  const totalCOGS = saleItems.reduce((sum, i) => sum + i.cost * i.qty, 0)
+  const totalDrinksQty = activeSaleItems.filter(i => DRINK_CATEGORIES.has(i.category)).reduce((sum, i) => sum + i.qty, 0)
+  const totalPastryFoodQty = activeSaleItems.filter(i => PASTRY_FOOD_CATEGORIES.has(i.category)).reduce((sum, i) => sum + i.qty, 0)
+  const totalCOGS = activeSaleItems.reduce((sum, i) => sum + i.cost * i.qty, 0)
   const netProfit = totalRevenue - totalCOGS
   const profitMargin = totalRevenue ? (netProfit / totalRevenue) * 100 : 0
   const cogsSummary = { totalRevenue, netProfit, margin: profitMargin }
@@ -2012,29 +2295,29 @@ function Reports({ items, businessName, userEmail }) {
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => setShowClearConfirm(true)}
-            disabled={totalTransactionCount === 0}
+            disabled={sales.length === 0}
             title="Permanently delete all transaction history"
             className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-[#fdf0ec] text-[#b85c42] hover:bg-[#f9e2db] transition-colors disabled:opacity-50"
           >
-            <IconRefresh /> Clear ({totalTransactionCount})
+            <IconRefresh /> Clear ({sales.length})
           </button>
           <button
-            onClick={() => exportSalesToExcel(sales, businessName)}
-            disabled={sales.length === 0}
+            onClick={() => exportSalesToExcel(activeSales, businessName)}
+            disabled={activeSales.length === 0}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
           >
             <IconTable /> Excel
           </button>
           <button
-            onClick={() => exportSalesToPDF(sales, businessName, cogsSummary)}
-            disabled={sales.length === 0}
+            onClick={() => exportSalesToPDF(activeSales, businessName, cogsSummary)}
+            disabled={activeSales.length === 0}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
           >
             <IconFileText /> PDF
           </button>
           <button
-            onClick={() => exportSalesToWord(sales, businessName, cogsSummary)}
-            disabled={sales.length === 0}
+            onClick={() => exportSalesToWord(activeSales, businessName, cogsSummary)}
+            disabled={activeSales.length === 0}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
           >
             <IconDownload /> Word
@@ -2188,52 +2471,104 @@ function Reports({ items, businessName, userEmail }) {
           </div>
         )}
       </div>
+
+      {/* Transaction history — void/edit gated behind re-entering the staff password */}
+      <div className="mt-6 bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#f0e8d8]">
+          <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">Transaction History</h2>
+          <span className="text-xs text-[#a8977e]">{sales.length} total</span>
+        </div>
+        {transactionList.length === 0 ? (
+          <div className="text-center py-16 text-[#a8977e]">
+            <p className="text-4xl mb-3">🧾</p>
+            <p className="font-medium text-[#2c2416]">No transactions yet</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-[#f5edd6]">
+            {transactionList.map(sale => {
+              const isVoided = sale.status === 'voided'
+              const saleLineItems = itemsBySale.get(sale.id) || []
+              const itemCount = saleLineItems.reduce((sum, i) => sum + i.qty, 0)
+              return (
+                <div key={sale.id} className={`flex items-center justify-between gap-4 px-5 py-4 ${isVoided ? 'opacity-50' : 'hover:bg-[#fffcf5]'} transition-colors`}>
+                  <div className="flex items-center gap-4 min-w-0">
+                    <div className="w-9 h-9 rounded-xl bg-[#fff9ea] flex items-center justify-center text-[#a8977e] text-xs font-mono shrink-0">
+                      {String(sale.id).slice(-2)}
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-sm font-medium text-[#2c2416] truncate ${isVoided ? 'line-through' : ''}`}>
+                        {sale.customer_name || 'Walk-in'}
+                      </p>
+                      <p className="text-xs text-[#a8977e]">
+                        {itemCount} item{itemCount !== 1 ? 's' : ''} · {new Date(sale.created_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })} · {paymentLabel(sale.payment_method)}
+                      </p>
+                      {isVoided && sale.voided_at && (
+                        <p className="text-[10px] text-[#b85c42] mt-0.5">Voided {new Date(sale.voided_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                      )}
+                      {!isVoided && sale.edited_at && (
+                        <p className="text-[10px] text-[#c49a3c] mt-0.5">Edited {new Date(sale.edited_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {isVoided ? (
+                      <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-[#fdf0ec] text-[#b85c42]">VOIDED</span>
+                    ) : (
+                      <span className="hidden sm:inline text-xs px-2.5 py-1 rounded-full font-medium bg-[#f0faf0] text-[#6b9e72]">completed</span>
+                    )}
+                    <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(sale.total)}</span>
+                    {!isVoided && (
+                      <TransactionMenu
+                        onEdit={() => setEditPasswordTarget(sale)}
+                        onVoid={() => setVoidTarget(sale)}
+                      />
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
     </div>
 
     {showClearConfirm && (
-      <Modal title="Clear Transaction Reports" onClose={closeClearConfirm}>
-        <p className="text-sm text-[#7a6a50] mb-4">
-          This permanently deletes all {totalTransactionCount} recorded transaction{totalTransactionCount === 1 ? '' : 's'}. This cannot be undone.
-          Re-enter your account password to confirm.
-        </p>
-        <form
-          onSubmit={e => { e.preventDefault(); handleClearConfirm() }}
-          className="space-y-4"
-        >
-          <div>
-            <label className={labelClass}>Password</label>
-            <input
-              type="password"
-              required
-              autoFocus
-              autoComplete="current-password"
-              className={inputClass}
-              value={clearPassword}
-              onChange={e => setClearPassword(e.target.value)}
-              placeholder="••••••••"
-            />
-          </div>
-          {clearError && <p className="text-xs text-[#b85c42]">{clearError}</p>}
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={closeClearConfirm}
-              disabled={clearing}
-              className="flex-1 py-2.5 rounded-xl border border-[#e8ddc8] text-sm font-medium text-[#7a6a50] hover:border-[#ddcca6] transition-all disabled:opacity-60"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={clearing}
-              className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-[#b85c42] text-white hover:bg-[#a04030] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
-            >
-              {clearing && <Spinner className="w-4 h-4" />}
-              {clearing ? 'Clearing…' : 'Clear Everything'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      <PasswordConfirmModal
+        title="Clear Transaction Reports"
+        message={`This permanently deletes all ${sales.length} recorded transaction${sales.length === 1 ? '' : 's'}. This cannot be undone. Re-enter your account password to confirm.`}
+        confirmLabel="Clear Everything"
+        onConfirm={handleClearConfirm}
+        onClose={() => setShowClearConfirm(false)}
+      />
+    )}
+
+    {voidTarget && (
+      <PasswordConfirmModal
+        title="Void Transaction"
+        message={`This marks the ${formatPHP(voidTarget.total)} order for ${voidTarget.customer_name || 'Walk-in'} as voided and restores its items to stock. It stays in your records but is excluded from revenue and reports. Re-enter your account password to confirm.`}
+        confirmLabel="Void Transaction"
+        onConfirm={handleVoidConfirm}
+        onClose={() => setVoidTarget(null)}
+      />
+    )}
+
+    {editPasswordTarget && (
+      <PasswordConfirmModal
+        title="Edit Transaction"
+        message="Editing a completed order adjusts inventory and totals. Re-enter your account password to continue."
+        confirmLabel="Continue"
+        onConfirm={handleEditPasswordConfirm}
+        onClose={() => setEditPasswordTarget(null)}
+      />
+    )}
+
+    {editingSale && (
+      <EditTransactionModal
+        sale={editingSale}
+        items={itemsBySale.get(editingSale.id) || []}
+        onClose={() => setEditingSale(null)}
+        onSave={handleSaveEdit}
+      />
     )}
     </>
   )
@@ -2478,14 +2813,27 @@ export default function App() {
     setItems(prev => prev.filter(i => i.id !== id))
   }
 
-  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod }) => {
-    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod })
+  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven }) => {
+    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven })
     // Reflect the stock decrement locally so Products/Inventory update without a refetch.
     setItems(prev => prev.map(p => {
       const sold = saleItems.find(i => i.id === p.id)
       return sold ? { ...p, stock: Math.max(0, p.stock - sold.qty) } : p
     }))
     return sale
+  }
+
+  // Void/edit both restore or re-deduct stock server-side per line item —
+  // simplest to just refetch products afterward rather than re-deriving the
+  // same per-product deltas a second time on the client.
+  const voidTransaction = async (saleId, voidedBy) => {
+    await api.voidSale(saleId, voidedBy)
+    refetchItems()
+  }
+
+  const editTransaction = async (saleId, payload) => {
+    await api.editSale(saleId, payload)
+    refetchItems()
   }
 
   const addToCart = product => {
@@ -2528,7 +2876,7 @@ export default function App() {
       case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers />
-      case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} />
+      case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
       case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} />
       default: return null
     }
