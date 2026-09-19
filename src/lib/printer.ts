@@ -2,7 +2,7 @@
 // only works on the same device as the browser (it talks to a local
 // WebSocket), whereas PrintNode's REST API lets any device (Mac, iPad,
 // etc.) trigger a print on the same registered printer.
-import { PASTRY_FOOD_CATEGORIES } from './categories'
+import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from './categories'
 
 const PRINTNODE_API_KEY = import.meta.env.VITE_PRINTNODE_API_KEY
 const PRINTNODE_PRINTER_ID = 75810640
@@ -139,6 +139,38 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
   return parts.join('')
 }
 
+// Barista slip — drink items only (no prices, same shape as the Kitchen
+// Copy), tagged with the order number/timestamp so it can be matched back
+// to the customer's order. Skipped entirely for food-only orders. No
+// modifiers (size, "Iced", "Extra shot", etc.) are included since the
+// product/cart data model doesn't carry per-item modifiers today.
+function buildBaristaReceiptText(order: ReceiptOrder): string {
+  const width = RECEIPT_WIDTH
+  const divider = `${'-'.repeat(width)}\n`
+  const drinkItems = order.items.filter(item => item.category && DRINK_CATEGORIES.has(item.category))
+  const parts: string[] = [INIT]
+
+  parts.push(centerLine('BARISTA COPY', width))
+  parts.push(centerLine(
+    new Date(order.createdAt || Date.now()).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }),
+    width
+  ))
+  if (order.id) {
+    parts.push(centerLine(`Order #${order.id.slice(0, 8).toUpperCase()}`, width))
+  }
+  parts.push(divider)
+
+  drinkItems.forEach(item => {
+    parts.push(wrapLine(`${item.qty} x ${item.name}`, width))
+  })
+
+  parts.push(divider)
+  parts.push('\n\n\n\n\n')
+  parts.push(FULL_CUT)
+
+  return parts.join('')
+}
+
 // btoa treats a string as raw bytes (each char code 0-255 -> one output
 // byte), which is exactly what our ESC/POS control codes need — unlike
 // UTF-8 encoding, which would re-encode any byte above 0x7F (e.g. the 0xFA
@@ -163,15 +195,18 @@ export async function printReceipt(order: ReceiptOrder): Promise<void> {
   }
 
   // One customer copy, one for the café's own records, and — only when the
-  // order has at least one food/pastry item — a kitchen prep slip. All
-  // sent as a single raw byte stream/print job rather than separate API
-  // calls, since the printer processes them sequentially either way (kick
-  // drawer, print + cut, print + cut, [print + cut]).
+  // order has the relevant item type — a kitchen prep slip and/or a barista
+  // slip. All sent as a single raw byte stream/print job rather than
+  // separate API calls, since the printer processes them sequentially
+  // either way (kick drawer, print + cut, print + cut, [print + cut], [print
+  // + cut]).
   const hasFoodItems = order.items.some(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
+  const hasDrinkItems = order.items.some(item => item.category && DRINK_CATEGORIES.has(item.category))
   const raw = KICK_DRAWER
     + buildReceiptText(order, 'CUSTOMER COPY')
     + buildReceiptText(order, 'CAFE COPY')
     + (hasFoodItems ? buildKitchenReceiptText(order) : '')
+    + (hasDrinkItems ? buildBaristaReceiptText(order) : '')
 
   let response: Response
   try {
