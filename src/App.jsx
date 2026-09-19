@@ -1692,6 +1692,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
 // ─── Inventory Screen ─────────────────────────────────────────────────────────
 function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateStock, onDeleteItem }) {
   const [tab, setTab] = useState('product')
+  const [search, setSearch] = useState('')
   const [editing, setEditing] = useState(null)
   const [editVal, setEditVal] = useState('')
   const [showAddModal, setShowAddModal] = useState(false)
@@ -1702,6 +1703,10 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
   const [deleteError, setDeleteError] = useState('')
 
   const tabItems = items.filter(i => i.kind === tab)
+  const filteredItems = tabItems.filter(i =>
+    i.name.toLowerCase().includes(search.toLowerCase()) ||
+    (i.category || '').toLowerCase().includes(search.toLowerCase())
+  )
   const tabLabel = tab === 'product' ? 'Product' : 'Ingredient'
 
   const save = async id => {
@@ -1759,7 +1764,7 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
 
       <div className="flex gap-2 mb-6">
         <button
-          onClick={() => setTab('product')}
+          onClick={() => { setTab('product'); setSearch('') }}
           className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
             tab === 'product'
               ? 'bg-[#2c2416] text-[#ddcca6]'
@@ -1769,7 +1774,7 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
           Products
         </button>
         <button
-          onClick={() => setTab('ingredient')}
+          onClick={() => { setTab('ingredient'); setSearch('') }}
           className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
             tab === 'ingredient'
               ? 'bg-[#2c2416] text-[#ddcca6]'
@@ -1778,6 +1783,18 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
         >
           Ingredients
         </button>
+      </div>
+
+      {/* Search */}
+      <div className="relative mb-6">
+        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#a8977e]"><IconSearch /></span>
+        <input
+          type="text"
+          placeholder={`Search ${tabLabel.toLowerCase()}s...`}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[#e8ddc8] bg-white text-sm text-[#2c2416] placeholder-[#c4ae88] focus:outline-none focus:border-[#ddcca6] focus:ring-2 focus:ring-[#ddcca6]/20 transition-all"
+        />
       </div>
 
       {stockError && (
@@ -1800,6 +1817,10 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
             <IconPlus /> Add {tabLabel}
           </button>
         </div>
+      ) : filteredItems.length === 0 ? (
+        <div className="text-center py-16 text-[#a8977e] bg-white rounded-2xl border border-[#f0e8d8]">
+          <p className="text-sm">No {tabLabel.toLowerCase()}s match "{search}"</p>
+        </div>
       ) : (
         <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_12px_rgba(44,36,22,0.06)] overflow-hidden">
           <div className="overflow-x-auto">
@@ -1815,7 +1836,7 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#f5edd6]">
-                {tabItems.map(p => {
+                {filteredItems.map(p => {
                   const status = p.stock === 0 ? 'out' : p.stock < 15 ? 'low' : 'ok'
                   return (
                     <tr key={p.id} className="hover:bg-[#fffcf5] transition-colors">
