@@ -39,6 +39,7 @@ export interface ReceiptOrder {
   orderType?: string
   note?: string
   businessName?: string
+  isReprint?: boolean
 }
 
 // The peso sign (₱, U+20B1) isn't in the code pages most ESC/POS thermal
@@ -54,6 +55,14 @@ function paymentLabelForPrint(method?: string): string {
 
 function orderTypeLabelForPrint(orderType?: string): string | null {
   return orderType === 'dine_in' ? 'Dine In' : orderType === 'take_out' ? 'Take Out' : null
+}
+
+// Stamped at the very top of a reprinted slip — with its own timestamp,
+// distinct from the order's original date/time further down — so it's
+// never mistaken for the original transaction printout.
+function reprintBanner(width: number): string {
+  return centerLine('*** REPRINT ***', width)
+    + centerLine(`Reprinted ${new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}`, width)
 }
 
 function padLine(left: string, right: string, width = RECEIPT_WIDTH): string {
@@ -75,6 +84,9 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   const divider = `${'-'.repeat(width)}\n`
   const parts: string[] = [INIT]
 
+  if (order.isReprint) {
+    parts.push(reprintBanner(width))
+  }
   if (copyLabel) {
     parts.push(centerLine(copyLabel, width))
   }
@@ -133,6 +145,9 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
   const foodItems = order.items.filter(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
   const parts: string[] = [INIT]
 
+  if (order.isReprint) {
+    parts.push(reprintBanner(width))
+  }
   parts.push(centerLine('KITCHEN COPY', width))
   parts.push(centerLine(
     new Date(order.createdAt || Date.now()).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }),
@@ -172,6 +187,9 @@ function buildBaristaReceiptText(order: ReceiptOrder): string {
   const drinkItems = order.items.filter(item => item.category && DRINK_CATEGORIES.has(item.category))
   const parts: string[] = [INIT]
 
+  if (order.isReprint) {
+    parts.push(reprintBanner(width))
+  }
   parts.push(centerLine('BARISTA COPY', width))
   parts.push(centerLine(
     new Date(order.createdAt || Date.now()).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }),
@@ -277,4 +295,27 @@ export async function printReceipt(order: ReceiptOrder): Promise<void> {
  */
 export async function openCashDrawer(): Promise<void> {
   await sendToPrinter(INIT + KICK_DRAWER, 'Open Cash Drawer')
+}
+
+export type ReprintCopyType = 'customer' | 'cafe' | 'kitchen' | 'barista'
+
+/**
+ * Reprints a single copy of a past order from its stored transaction data.
+ * No drawer kick (that's tied to completing the original sale, not a
+ * reprint), no new transaction, no inventory effect — purely a print
+ * action. The slip is stamped with a reprint banner (see reprintBanner)
+ * so it's never mistaken for the original.
+ */
+export async function reprintReceipt(order: ReceiptOrder, copyType: ReprintCopyType): Promise<void> {
+  const reprintOrder: ReceiptOrder = { ...order, isReprint: true }
+  const raw = copyType === 'customer' ? buildReceiptText(reprintOrder, 'CUSTOMER COPY')
+    : copyType === 'cafe' ? buildReceiptText(reprintOrder, 'CAFE COPY')
+    : copyType === 'kitchen' ? buildKitchenReceiptText(reprintOrder)
+    : buildBaristaReceiptText(reprintOrder)
+
+  await sendToPrinter(
+    raw,
+    `Reprint${order.id ? ` #${order.id.slice(0, 8).toUpperCase()}` : ''} (${copyType})`,
+    order.businessName
+  )
 }

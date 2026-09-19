@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
-import { printReceipt, openCashDrawer } from '@/lib/printer'
+import { printReceipt, openCashDrawer, reprintReceipt } from '@/lib/printer'
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
 import * as XLSX from 'xlsx'
@@ -399,7 +399,7 @@ function PasswordConfirmModal({ title, message, confirmLabel = 'Confirm', onConf
 }
 
 // ─── 3-dot row menu (Void/Edit) ────────────────────────────────────────────
-function TransactionMenu({ onVoid, onEdit }) {
+function TransactionMenu({ onReprint, onVoid, onEdit }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -423,20 +423,90 @@ function TransactionMenu({ onVoid, onEdit }) {
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 w-32 bg-white rounded-xl border border-[#f0e8d8] shadow-lg py-1 overflow-hidden z-20">
-          <button
-            onClick={() => { setOpen(false); onEdit() }}
-            className="w-full text-left px-3.5 py-2 text-sm text-[#2c2416] hover:bg-[#fff9ea] transition-colors"
-          >
-            Edit
-          </button>
-          <button
-            onClick={() => { setOpen(false); onVoid() }}
-            className="w-full text-left px-3.5 py-2 text-sm text-[#b85c42] hover:bg-[#fdf0ec] transition-colors"
-          >
-            Void
-          </button>
+          {onReprint && (
+            <button
+              onClick={() => { setOpen(false); onReprint() }}
+              className="w-full text-left px-3.5 py-2 text-sm text-[#2c2416] hover:bg-[#fff9ea] transition-colors"
+            >
+              Reprint
+            </button>
+          )}
+          {onEdit && (
+            <button
+              onClick={() => { setOpen(false); onEdit() }}
+              className="w-full text-left px-3.5 py-2 text-sm text-[#2c2416] hover:bg-[#fff9ea] transition-colors"
+            >
+              Edit
+            </button>
+          )}
+          {onVoid && (
+            <button
+              onClick={() => { setOpen(false); onVoid() }}
+              className="w-full text-left px-3.5 py-2 text-sm text-[#b85c42] hover:bg-[#fdf0ec] transition-colors"
+            >
+              Void
+            </button>
+          )}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Reprint controls — shared by the Customers order-history modal and the
+// Reports transaction menu. Reprints a chosen copy from stored transaction
+// data only: no new sale, no drawer kick, no inventory effect. Kitchen/
+// Barista options only appear when the order actually had food/drink items.
+function ReprintButtons({ order, items, businessName }) {
+  const [reprintingType, setReprintingType] = useState(null)
+  const [error, setError] = useState('')
+
+  const hasFood = items.some(i => i.category && PASTRY_FOOD_CATEGORIES.has(i.category))
+  const hasDrink = items.some(i => i.category && DRINK_CATEGORIES.has(i.category))
+  const copyTypes = ['customer', 'cafe', ...(hasFood ? ['kitchen'] : []), ...(hasDrink ? ['barista'] : [])]
+  const copyTypeLabel = t => t === 'customer' ? 'Customer' : t === 'cafe' ? 'Cafe' : t === 'kitchen' ? 'Kitchen' : 'Barista'
+
+  const handleReprint = async copyType => {
+    setReprintingType(copyType)
+    setError('')
+    try {
+      await reprintReceipt({
+        id: order.id,
+        createdAt: order.created_at,
+        customerName: order.customer_name,
+        items,
+        subtotal: order.total,
+        total: order.total,
+        paymentMethod: order.payment_method,
+        amountReceived: order.amount_received,
+        change: order.change_given,
+        orderType: order.order_type,
+        note: order.note,
+        businessName,
+      }, copyType)
+    } catch (err) {
+      setError(err.message || 'Could not reprint')
+    } finally {
+      setReprintingType(null)
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5">
+        {copyTypes.map(copyType => (
+          <button
+            key={copyType}
+            onClick={() => handleReprint(copyType)}
+            disabled={!!reprintingType}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all disabled:opacity-50"
+          >
+            {reprintingType === copyType && <Spinner className="w-3 h-3" />}
+            {copyTypeLabel(copyType)}
+          </button>
+        ))}
+      </div>
+      {error && <p className="text-[11px] text-[#b85c42] mt-1.5">{error}</p>}
     </div>
   )
 }
@@ -1851,7 +1921,7 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
 }
 
 // ─── Customers Screen ─────────────────────────────────────────────────────────
-function Customers() {
+function Customers({ businessName }) {
   const [search, setSearch] = useState('')
   const [sales, setSales] = useState([])
   const [saleItems, setSaleItems] = useState([])
@@ -2044,6 +2114,10 @@ function Customers() {
                         ))}
                       </div>
                     )}
+                    <div className="mt-3 pt-3 border-t border-[#f5edd6]">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Reprint</p>
+                      <ReprintButtons order={order} items={orderItems} businessName={businessName} />
+                    </div>
                   </div>
                 )
               })}
@@ -2308,6 +2382,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
   const [voidTarget, setVoidTarget] = useState(null)
   const [editPasswordTarget, setEditPasswordTarget] = useState(null)
   const [editingSale, setEditingSale] = useState(null)
+  const [reprintTarget, setReprintTarget] = useState(null)
   const [orderTypeFilter, setOrderTypeFilter] = useState('all')
   const now = new Date()
 
@@ -2731,12 +2806,11 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                       <span className="hidden sm:inline text-xs px-2.5 py-1 rounded-full font-medium bg-[#f0faf0] text-[#6b9e72]">completed</span>
                     )}
                     <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(sale.total)}</span>
-                    {!isVoided && (
-                      <TransactionMenu
-                        onEdit={() => setEditPasswordTarget(sale)}
-                        onVoid={() => setVoidTarget(sale)}
-                      />
-                    )}
+                    <TransactionMenu
+                      onReprint={() => setReprintTarget(sale)}
+                      onEdit={!isVoided ? () => setEditPasswordTarget(sale) : undefined}
+                      onVoid={!isVoided ? () => setVoidTarget(sale) : undefined}
+                    />
                   </div>
                 </div>
               )
@@ -2783,6 +2857,13 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
         onClose={() => setEditingSale(null)}
         onSave={handleSaveEdit}
       />
+    )}
+
+    {reprintTarget && (
+      <Modal title={`Reprint Order #${String(reprintTarget.id).slice(0, 8).toUpperCase()}`} onClose={() => setReprintTarget(null)}>
+        <p className="text-sm text-[#7a6a50] mb-4">Choose which copy to reprint. This only prints — it doesn't affect the transaction or inventory.</p>
+        <ReprintButtons order={reprintTarget} items={itemsBySale.get(reprintTarget.id) || []} businessName={businessName} />
+      </Modal>
     )}
     </>
   )
@@ -3101,7 +3182,7 @@ export default function App() {
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
       case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
-      case 'customers': return <Customers />
+      case 'customers': return <Customers businessName={settings.businessName} />
       case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
       case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} />
       default: return null
