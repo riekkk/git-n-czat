@@ -120,6 +120,15 @@ export async function recordSale({ customerName, items, total, paymentMethod, am
   return sale
 }
 
+// Audit trail for the standalone "Open Cash Drawer" button — separate from
+// the transaction log since opening the drawer this way doesn't create a
+// sale. Best-effort: callers shouldn't block or fail the drawer opening
+// (which has already physically happened) if only the log insert fails.
+export async function logDrawerOpen(openedBy) {
+  const { error } = await supabase.from('drawer_openings').insert({ opened_by: openedBy || null })
+  if (error) throw error
+}
+
 export async function fetchLowStockCount(threshold = LOW_STOCK_THRESHOLD) {
   const { count, error } = await supabase.from('products').select('id', { count: 'exact', head: true }).lt('stock', threshold)
   if (error) throw error

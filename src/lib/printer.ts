@@ -183,17 +183,47 @@ function toBase64(raw: string): string {
   return btoa(safe)
 }
 
-/**
- * Prints a receipt via the PrintNode cloud API. Throws a specific,
- * staff-readable error on failure — callers should catch it and show the
- * message (missing API key vs. a failed API call are surfaced differently
- * since they need different fixes).
- */
-export async function printReceipt(order: ReceiptOrder): Promise<void> {
+// Shared by printReceipt and openCashDrawer — sends a raw ESC/POS byte
+// stream to the registered printer via PrintNode. Throws a specific,
+// staff-readable error on failure (missing API key vs. a failed API call
+// are surfaced differently since they need different fixes).
+async function sendToPrinter(raw: string, title: string, source?: string): Promise<void> {
   if (!PRINTNODE_API_KEY) {
     throw new Error('Printing is not configured — missing VITE_PRINTNODE_API_KEY.')
   }
 
+  let response: Response
+  try {
+    response = await fetch(PRINTNODE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Basic ${btoa(`${PRINTNODE_API_KEY}:`)}`,
+      },
+      body: JSON.stringify({
+        printerId: PRINTNODE_PRINTER_ID,
+        title,
+        contentType: 'raw_base64',
+        content: toBase64(raw),
+        source: source || 'POS',
+      }),
+    })
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(`Could not reach PrintNode — check your internet connection. (${detail})`)
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    throw new Error(`PrintNode could not print (HTTP ${response.status}) — check the printer is online in PrintNode.${body ? ` Details: ${body}` : ''}`)
+  }
+}
+
+/**
+ * Prints a receipt via the PrintNode cloud API — see sendToPrinter for the
+ * error contract.
+ */
+export async function printReceipt(order: ReceiptOrder): Promise<void> {
   // One customer copy, one for the café's own records, and — only when the
   // order has the relevant item type — a kitchen prep slip and/or a barista
   // slip. All sent as a single raw byte stream/print job rather than
@@ -208,29 +238,14 @@ export async function printReceipt(order: ReceiptOrder): Promise<void> {
     + (hasFoodItems ? buildKitchenReceiptText(order) : '')
     + (hasDrinkItems ? buildBaristaReceiptText(order) : '')
 
-  let response: Response
-  try {
-    response = await fetch(PRINTNODE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Basic ${btoa(`${PRINTNODE_API_KEY}:`)}`,
-      },
-      body: JSON.stringify({
-        printerId: PRINTNODE_PRINTER_ID,
-        title: `Receipt${order.id ? ` #${order.id.slice(0, 8).toUpperCase()}` : ''}`,
-        contentType: 'raw_base64',
-        content: toBase64(raw),
-        source: order.businessName || 'POS',
-      }),
-    })
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err)
-    throw new Error(`Could not reach PrintNode — check your internet connection. (${detail})`)
-  }
+  await sendToPrinter(raw, `Receipt${order.id ? ` #${order.id.slice(0, 8).toUpperCase()}` : ''}`, order.businessName)
+}
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => '')
-    throw new Error(`PrintNode could not print (HTTP ${response.status}) — check the printer is online in PrintNode.${body ? ` Details: ${body}` : ''}`)
-  }
+/**
+ * Pulses the drawer-kick line directly — no receipt, no order, nothing
+ * printed. Used for the standalone "Open Cash Drawer" button so staff can
+ * pop the drawer for change/shift counts without running a transaction.
+ */
+export async function openCashDrawer(): Promise<void> {
+  await sendToPrinter(INIT + KICK_DRAWER, 'Open Cash Drawer')
 }

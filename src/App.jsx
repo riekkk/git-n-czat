@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
-import { printReceipt } from '@/lib/printer'
+import { printReceipt, openCashDrawer } from '@/lib/printer'
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
 import * as XLSX from 'xlsx'
@@ -118,6 +118,14 @@ function IconCart() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" /><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
+    </svg>
+  )
+}
+function IconDrawer() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
     </svg>
   )
 }
@@ -2728,6 +2736,7 @@ export default function App() {
   const [session, setSession] = useState(undefined) // undefined = checking, null = signed out
   const [screen, setScreen] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [showDrawerPassword, setShowDrawerPassword] = useState(false)
   const [clock, setClock] = useState(() => new Date())
   const [cart, setCart] = useState([])
   const [isMobile, setIsMobile] = useState(false)
@@ -2834,6 +2843,17 @@ export default function App() {
   const editTransaction = async (saleId, payload) => {
     await api.editSale(saleId, payload)
     refetchItems()
+  }
+
+  // Standalone drawer open (change/shift counts) — no transaction, no
+  // receipt, just the physical kick. Logging is best-effort: the drawer has
+  // already opened by the time this runs, so a logging failure shouldn't
+  // read as if the action itself failed.
+  const handleOpenDrawerConfirm = async password => {
+    await verifyStaffPassword(session?.user?.email, password)
+    await openCashDrawer()
+    api.logDrawerOpen(session?.user?.email).catch(() => {})
+    setShowDrawerPassword(false)
   }
 
   const addToCart = product => {
@@ -2981,6 +3001,14 @@ export default function App() {
             <h2 className="font-semibold text-[#2c2416] text-sm md:text-base">{navLabel}</h2>
           </div>
           <div className="flex items-center gap-3">
+            {/* Open cash drawer */}
+            <button
+              onClick={() => setShowDrawerPassword(true)}
+              title="Open cash drawer"
+              className="flex items-center justify-center w-9 h-9 rounded-xl bg-[#fff9ea] border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-all"
+            >
+              <IconDrawer />
+            </button>
             {/* Cart badge */}
             <button
               onClick={() => setScreen('checkout')}
@@ -3036,6 +3064,16 @@ export default function App() {
           ))}
         </div>
       </nav>
+
+      {showDrawerPassword && (
+        <PasswordConfirmModal
+          title="Open Cash Drawer"
+          message="Re-enter your account password to open the drawer. This won't create a transaction or print a receipt."
+          confirmLabel="Open Drawer"
+          onConfirm={handleOpenDrawerConfirm}
+          onClose={() => setShowDrawerPassword(false)}
+        />
+      )}
     </div>
   )
 }
