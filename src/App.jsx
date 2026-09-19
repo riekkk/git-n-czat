@@ -1853,20 +1853,58 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
 // ─── Customers Screen ─────────────────────────────────────────────────────────
 function Customers() {
   const [search, setSearch] = useState('')
-  const customers = []
-  const filtered = customers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
+  const [sales, setSales] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-  const tierColor = tier =>
-    tier === 'Gold' ? 'bg-[#fff8e6] text-[#c49a3c]' :
-    tier === 'Silver' ? 'bg-[#f5f5f5] text-[#7a7a7a]' :
-    'bg-[#fdf0ec] text-[#b85c42]'
+  const load = () => {
+    setLoading(true)
+    setError('')
+    api.fetchAllSales()
+      .then(setSales)
+      .catch(err => setError(err.message || 'Could not load customers'))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(load, [])
+
+  // Live sync: a sale rung up elsewhere updates customer stats without a refresh.
+  useEffect(() => {
+    const channel = supabase
+      .channel('customers-sales-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, () => {
+        api.fetchAllSales().then(setSales).catch(() => {})
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [])
+
+  // There's no separate customers table — "customer" here is derived live
+  // from sales.customer_name, the same free-text field Checkout already
+  // collects. Grouped case-insensitively (trimmed) so casing differences
+  // ("Juan" vs "juan") don't split one customer into two; a blank name
+  // (or the literal "Walk-in" Checkout defaults to) all bucket into a
+  // single "Walk-in" entry rather than one row per anonymous order. Voided
+  // sales are excluded — a reversed order shouldn't count as a visit/spend.
+  const customerMap = new Map()
+  sales.filter(s => s.status !== 'voided').forEach(sale => {
+    const displayName = (sale.customer_name || '').trim() || 'Walk-in'
+    const key = displayName.toLowerCase()
+    const entry = customerMap.get(key) || { name: displayName, orders: 0, totalSpent: 0, lastOrderAt: sale.created_at }
+    entry.orders += 1
+    entry.totalSpent += sale.total
+    if (new Date(sale.created_at) > new Date(entry.lastOrderAt)) entry.lastOrderAt = sale.created_at
+    customerMap.set(key, entry)
+  })
+  const customers = Array.from(customerMap.values()).sort((a, b) => b.totalSpent - a.totalSpent)
+  const filtered = customers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
 
   return (
     <div className="p-4 md:p-6 lg:p-8 max-w-5xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416]">Customers</h1>
-          <p className="text-sm text-[#a8977e] mt-0.5">{customers.length} registered customers</p>
+          <p className="text-sm text-[#a8977e] mt-0.5">{customers.length} customer{customers.length !== 1 ? 's' : ''} from order history</p>
         </div>
         <div className="relative w-full sm:w-64">
           <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#a8977e]"><IconSearch /></span>
@@ -1880,36 +1918,39 @@ function Customers() {
         </div>
       </div>
 
-      {customers.length === 0 ? (
+      {loading ? (
+        <LoadingBlock label="Loading customers…" />
+      ) : error ? (
+        <ErrorBlock message={error} onRetry={load} />
+      ) : customers.length === 0 ? (
         <div className="text-center py-20 text-[#a8977e] bg-white rounded-2xl border border-[#f0e8d8]">
           <p className="text-4xl mb-3">◉</p>
           <p className="font-medium text-[#2c2416]">No customers yet</p>
-          <p className="text-sm mt-1">Customer profiles will show up here once you have them</p>
+          <p className="text-sm mt-1">Customer profiles build up automatically as orders come through Checkout</p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-16 text-[#a8977e] bg-white rounded-2xl border border-[#f0e8d8]">
+          <p className="text-sm">No customers match "{search}"</p>
         </div>
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map(c => (
-            <div key={c.id} className="bg-white rounded-2xl border border-[#f0e8d8] p-5 shadow-[0_1px_8px_rgba(44,36,22,0.05)] hover:shadow-[0_4px_20px_rgba(44,36,22,0.10)] hover:-translate-y-0.5 transition-all duration-200">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#fff9ea] border border-[#e8ddc8] flex items-center justify-center text-lg font-semibold text-[#7a6a50]">
-                    {c.name.split(' ').map(n => n[0]).join('')}
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-[#2c2416]">{c.name}</p>
-                    <p className="text-xs text-[#a8977e]">Last visit: {c.lastVisit}</p>
-                  </div>
+            <div key={c.name} className="bg-white rounded-2xl border border-[#f0e8d8] p-5 shadow-[0_1px_8px_rgba(44,36,22,0.05)] hover:shadow-[0_4px_20px_rgba(44,36,22,0.10)] hover:-translate-y-0.5 transition-all duration-200">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-[#fff9ea] border border-[#e8ddc8] flex items-center justify-center text-lg font-semibold text-[#7a6a50] shrink-0">
+                  {c.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
                 </div>
-                <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${tierColor(c.tier)}`}>{c.tier}</span>
-              </div>
-              <div className="space-y-1.5 text-xs text-[#7a6a50] mb-4">
-                <p>{c.email}</p>
-                <p>{c.phone}</p>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-[#2c2416] truncate">{c.name}</p>
+                  <p className="text-xs text-[#a8977e]">
+                    Last order: {new Date(c.lastOrderAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </p>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-3 pt-4 border-t border-[#f5edd6]">
                 <div>
                   <p className="text-xs text-[#a8977e]">Total Orders</p>
-                  <p className="font-semibold text-[#2c2416]">{c.totalOrders}</p>
+                  <p className="font-semibold text-[#2c2416]">{c.orders}</p>
                 </div>
                 <div>
                   <p className="text-xs text-[#a8977e]">Total Spent</p>
