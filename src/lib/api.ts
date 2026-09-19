@@ -82,16 +82,17 @@ export async function updateProductStock(id, previousStock, newStock) {
   if (logError) throw logError
 }
 
-export async function recordSale({ customerName, items, total, paymentMethod, amountReceived, changeGiven, orderType }) {
+export async function recordSale({ customerName, items, total, paymentMethod, amountReceived, changeGiven, orderType, isStaffOrder }) {
   const { data: sale, error: saleError } = await supabase
     .from('sales')
     .insert({
       customer_name: customerName || null,
       total,
-      payment_method: paymentMethod,
+      payment_method: isStaffOrder ? 'staff' : paymentMethod,
       amount_received: paymentMethod === 'cash' ? amountReceived : null,
       change_given: paymentMethod === 'cash' ? changeGiven : null,
       order_type: orderType || null,
+      is_staff_order: !!isStaffOrder,
     })
     .select()
     .single()
@@ -148,6 +149,7 @@ export async function fetchRecentSales(daysBack = 7) {
     .select('id, customer_name, total, created_at, sale_items(quantity)')
     .gte('created_at', start.toISOString())
     .neq('status', 'voided')
+    .eq('is_staff_order', false)
     .order('created_at', { ascending: false })
   if (error) throw error
 
@@ -166,7 +168,7 @@ export async function fetchRecentSales(daysBack = 7) {
 export async function fetchAllSales() {
   const { data, error } = await supabase
     .from('sales')
-    .select('id, customer_name, total, payment_method, order_type, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given')
+    .select('id, customer_name, total, payment_method, order_type, is_staff_order, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given')
     .order('created_at', { ascending: true })
   if (error) throw error
   return data.map(s => ({

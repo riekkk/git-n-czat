@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
-import { printReceipt, openCashDrawer, reprintReceipt } from '@/lib/printer'
+import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt } from '@/lib/printer'
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
 import * as XLSX from 'xlsx'
@@ -126,6 +126,14 @@ function IconDrawer() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M22 12h-6l-2 3h-4l-2-3H2" />
       <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+    </svg>
+  )
+}
+function IconCoffee() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 8h1a4 4 0 0 1 0 8h-1" /><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" />
+      <line x1="6" y1="1" x2="6" y2="4" /><line x1="10" y1="1" x2="10" y2="4" /><line x1="14" y1="1" x2="14" y2="4" />
     </svg>
   )
 }
@@ -481,6 +489,7 @@ function ReprintButtons({ order, items, businessName }) {
         amountReceived: order.amount_received,
         change: order.change_given,
         orderType: order.order_type,
+        isStaffOrder: order.is_staff_order,
         businessName,
       }, copyType)
     } catch (err) {
@@ -1033,7 +1042,7 @@ function ProductCardMenu({ onEdit, onDelete }) {
 }
 
 // ─── Persistent cart sidebar (Products screen, lg+ only) ───────────────────
-function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout }) {
+function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, checkoutLabel = 'Checkout' }) {
   const total = cart.reduce((sum, i) => sum + i.price * i.quantity, 0)
 
   return (
@@ -1087,7 +1096,7 @@ function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout }) {
           onClick={onCheckout}
           className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors"
         >
-          Checkout
+          {checkoutLabel}
         </button>
       </div>
     </div>
@@ -1095,7 +1104,7 @@ function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout }) {
 }
 
 // ─── Products Screen ─────────────────────────────────────────────────────────
-function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateItem, onDeleteItem, onAddToCart, onUpdateQty, onRemove, cart, onNavigate }) {
+function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateItem, onDeleteItem, onAddToCart, onUpdateQty, onRemove, cart, onNavigate, checkoutScreen = 'checkout', isStaffMode = false }) {
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('All')
   const [showAddModal, setShowAddModal] = useState(false)
@@ -1134,19 +1143,27 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
       {/* Header */}
       <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
         <div>
-          <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416]">Product Catalog</h1>
-          <p className="text-sm text-[#a8977e] mt-0.5">{products.length} item{products.length !== 1 ? 's' : ''} available</p>
+          <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416]">
+            {isStaffMode ? 'Staff Order' : 'Product Catalog'}
+          </h1>
+          <p className="text-sm text-[#a8977e] mt-0.5">
+            {isStaffMode
+              ? 'Items taken here deduct from stock but are excluded from sales and reports'
+              : `${products.length} item${products.length !== 1 ? 's' : ''} available`}
+          </p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#2c2416] text-[#ddcca6] text-sm font-medium hover:bg-[#3d3220] transition-colors"
-          >
-            <IconPlus /> Add Product
-          </button>
+          {!isStaffMode && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#2c2416] text-[#ddcca6] text-sm font-medium hover:bg-[#3d3220] transition-colors"
+            >
+              <IconPlus /> Add Product
+            </button>
+          )}
           {cartCount > 0 && (
             <button
-              onClick={() => onNavigate('checkout')}
+              onClick={() => onNavigate(checkoutScreen)}
               className="lg:hidden flex items-center gap-2 px-4 py-2 rounded-xl bg-[#ddcca6] text-[#2c2416] text-sm font-medium hover:bg-[#c4ae88] transition-colors"
             >
               <IconCart />
@@ -1267,7 +1284,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
 
       {cart.length > 0 && (
         <div className="hidden lg:block lg:w-80 xl:w-96 shrink-0">
-          <CartSidebar cart={cart} onUpdateQty={onUpdateQty} onRemove={onRemove} onCheckout={() => onNavigate('checkout')} />
+          <CartSidebar cart={cart} onUpdateQty={onUpdateQty} onRemove={onRemove} onCheckout={() => onNavigate(checkoutScreen)} checkoutLabel={isStaffMode ? 'Complete Staff Order' : 'Checkout'} />
         </div>
       )}
       </div>
@@ -1686,6 +1703,209 @@ function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCh
   )
 }
 
+// ─── Staff Order Checkout — employee meals/drinks, excluded from sales ────────
+// Deliberately simpler than Checkout: no payment method, order type, or cash
+// tender (no money changes hands), no Customer Copy (no paying customer).
+function StaffOrderCheckout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName, onNavigate }) {
+  const [staffName, setStaffName] = useState('')
+  const [paid, setPaid] = useState(false)
+  const [charging, setCharging] = useState(false)
+  const [chargeError, setChargeError] = useState('')
+  const [completedOrder, setCompletedOrder] = useState(null)
+  const [printingThermal, setPrintingThermal] = useState(false)
+  const [thermalPrintError, setThermalPrintError] = useState('')
+
+  const total = cart.reduce((sum, i) => sum + i.price * i.quantity, 0)
+
+  const handleComplete = async () => {
+    setCharging(true)
+    setChargeError('')
+    const resolvedStaffName = staffName.trim() || 'Staff'
+    try {
+      const order = await onCharge({
+        customerName: resolvedStaffName,
+        items: cart.map(i => ({ id: i.id, name: i.name, qty: i.quantity, price: i.price, category: i.category })),
+        total,
+      })
+      setCompletedOrder({
+        id: order?.id,
+        createdAt: order?.created_at || new Date().toISOString(),
+        staffName: resolvedStaffName,
+        items: cart.map(i => ({ name: i.name, qty: i.quantity, price: i.price, category: i.category })),
+        subtotal: total,
+        total,
+      })
+      setPaid(true)
+    } catch (err) {
+      setChargeError(err.message || 'Could not record staff order — try again')
+    } finally {
+      setCharging(false)
+    }
+  }
+
+  const handleThermalPrint = async () => {
+    if (!completedOrder) return
+    setPrintingThermal(true)
+    setThermalPrintError('')
+    try {
+      await printStaffOrderReceipt({
+        id: completedOrder.id,
+        createdAt: completedOrder.createdAt,
+        customerName: completedOrder.staffName,
+        items: completedOrder.items,
+        subtotal: completedOrder.subtotal,
+        total: completedOrder.total,
+        businessName,
+      })
+    } catch (err) {
+      setThermalPrintError(err.message || 'Could not print receipt')
+    } finally {
+      setPrintingThermal(false)
+    }
+  }
+
+  // Auto-fire the print in the background as soon as the order is recorded,
+  // same pattern as regular Checkout.
+  useEffect(() => {
+    if (!paid || !completedOrder) return
+    const timer = setTimeout(() => { handleThermalPrint() }, 400)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paid])
+
+  if (paid) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] p-8 text-center">
+        <div className="w-20 h-20 rounded-full bg-[#f0faf0] flex items-center justify-center text-4xl mb-5">✓</div>
+        <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416] mb-2">Staff Order Recorded</h2>
+        <p className="text-[#a8977e] mb-1">Value taken: <strong className="text-[#2c2416]">{formatPHP(total)}</strong></p>
+        <p className="text-sm text-[#a8977e] mb-8">For: <strong className="text-[#2c2416]">{completedOrder.staffName}</strong> · excluded from sales reports</p>
+        <div className="flex items-center gap-3 flex-wrap justify-center">
+          <button
+            onClick={handleThermalPrint}
+            disabled={printingThermal}
+            className="flex items-center gap-2 px-6 py-3 rounded-xl border border-[#e8ddc8] text-[#7a6a50] font-medium hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-colors disabled:opacity-60"
+          >
+            {printingThermal && <Spinner className="w-4 h-4" />}
+            {printingThermal ? 'Printing…' : 'Print Cafe Copy'}
+          </button>
+          <button
+            onClick={() => { onClearCart(); setPaid(false); setStaffName(''); setCompletedOrder(null); onNavigate('staffOrder') }}
+            className="px-8 py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-medium hover:bg-[#3d3220] transition-colors"
+          >
+            New Staff Order
+          </button>
+        </div>
+        {thermalPrintError && <p className="text-xs text-[#b85c42] mt-3 max-w-sm">{thermalPrintError}</p>}
+      </div>
+    )
+  }
+
+  if (cart.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] p-8 text-center">
+        <div className="text-6xl mb-4">🛒</div>
+        <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-xl font-semibold text-[#2c2416] mb-2">Cart is empty</h2>
+        <p className="text-[#a8977e] text-sm">Add items from the staff order catalog to get started</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-4 md:p-6 lg:p-8 max-w-6xl mx-auto">
+      <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416] mb-1">Staff Order</h1>
+      <p className="text-sm text-[#a8977e] mb-6">Excluded from sales revenue and reports — stock is still deducted.</p>
+
+      <div className="flex flex-col lg:flex-row gap-6">
+        {/* Cart items */}
+        <div className="flex-1">
+          <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_12px_rgba(44,36,22,0.06)] overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#f5edd6]">
+              <h2 className="font-semibold text-[#2c2416]">Items Taken</h2>
+              <button onClick={onClearCart} className="text-xs text-[#b85c42] hover:text-[#a04030] transition-colors">Clear all</button>
+            </div>
+            <div className="divide-y divide-[#f5edd6]">
+              {cart.map(item => (
+                <div key={item.id} className="flex items-center gap-4 px-5 py-4">
+                  <div className="w-10 h-10 rounded-xl bg-[#fff9ea] flex items-center justify-center text-xl shrink-0 overflow-hidden">
+                    {item.image ? <img src={item.image} alt="" className="w-full h-full object-cover" /> : '🍽️'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
+                    <p className="text-xs text-[#a8977e]">{formatPHP(item.price)} each</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => onUpdateQty(item.id, -1)}
+                      className="w-7 h-7 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
+                    >
+                      <IconMinus />
+                    </button>
+                    <span className="w-6 text-center text-sm font-semibold text-[#2c2416]">{item.quantity}</span>
+                    <button
+                      onClick={() => onUpdateQty(item.id, 1)}
+                      className="w-7 h-7 rounded-lg border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] hover:border-[#ddcca6] hover:bg-[#fff9ea] transition-all"
+                    >
+                      <IconPlus />
+                    </button>
+                  </div>
+                  <span className="w-20 text-right text-sm font-semibold text-[#2c2416] shrink-0">{formatPHP(item.price * item.quantity)}</span>
+                  <button
+                    onClick={() => onRemove(item.id)}
+                    className="text-[#c4ae88] hover:text-[#b85c42] transition-colors ml-1 shrink-0"
+                  >
+                    <IconTrash />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Summary */}
+        <div className="lg:w-80 xl:w-96 shrink-0">
+          <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_12px_rgba(44,36,22,0.06)] p-5 sticky top-4">
+            <h2 className="font-semibold text-[#2c2416] mb-4">Summary</h2>
+
+            <div className="mb-4">
+              <p className={labelClass}>Staff Member (optional)</p>
+              <input
+                type="text"
+                placeholder="Staff"
+                value={staffName}
+                onChange={e => setStaffName(e.target.value)}
+                className={inputClass}
+              />
+            </div>
+
+            <div className="space-y-2.5 py-4 border-t border-b border-[#f5edd6] mb-4">
+              <div className="flex justify-between text-sm text-[#7a6a50]">
+                <span>Items ({cart.reduce((s, i) => s + i.quantity, 0)})</span>
+                <span>{formatPHP(total)}</span>
+              </div>
+              <div className="flex justify-between font-semibold text-[#2c2416]">
+                <span>Value Taken</span>
+                <span style={{ fontFamily: 'var(--font-serif)' }} className="text-lg">{formatPHP(total)}</span>
+              </div>
+            </div>
+
+            {chargeError && <p className="text-xs text-[#b85c42] mb-3 text-center">{chargeError}</p>}
+
+            <button
+              onClick={handleComplete}
+              disabled={charging}
+              className="w-full py-4 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold text-base hover:bg-[#3d3220] active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+            >
+              {charging && <Spinner className="w-4 h-4" />}
+              {charging ? 'Processing…' : 'Complete Staff Order'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Inventory Screen ─────────────────────────────────────────────────────────
 function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateStock, onDeleteItem }) {
   const [tab, setTab] = useState('product')
@@ -1995,9 +2215,12 @@ function Customers({ businessName }) {
   // Summary cards exclude voided sales (a reversed order shouldn't count as
   // a visit/spend), but salesByKey keeps every sale — including voided —
   // so the detail view can still show the full history for audit purposes.
+  // Staff orders are dropped entirely here (not just from the stats) since
+  // they aren't a paying customer's transaction at all — an employee meal
+  // shouldn't show up as a "customer" record.
   const customerMap = new Map()
   const salesByKey = new Map()
-  sales.forEach(sale => {
+  sales.filter(sale => !sale.is_staff_order).forEach(sale => {
     const displayName = (sale.customer_name || '').trim() || 'Walk-in'
     const key = displayName.toLowerCase()
     if (!salesByKey.has(key)) salesByKey.set(key, [])
@@ -2149,7 +2372,7 @@ function Customers({ businessName }) {
 
 // ─── Report exports (Excel / PDF / Word) ───────────────────────────────────
 function paymentLabel(method) {
-  return method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : method === 'gcash' ? 'GCash' : (method || '—')
+  return method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : method === 'gcash' ? 'GCash' : method === 'staff' ? 'Staff' : (method || '—')
 }
 
 function orderTypeLabel(type) {
@@ -2437,11 +2660,12 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
     return () => { supabase.removeChannel(channel) }
   }, [])
 
-  // Voided sales are kept for audit but excluded from every revenue/analytics
-  // number below — only "active" (non-voided) sales/items feed those.
-  const voidedSaleIds = new Set(sales.filter(s => s.status === 'voided').map(s => s.id))
-  const activeSales = sales.filter(s => s.status !== 'voided')
-  const activeSaleItems = saleItems.filter(i => !voidedSaleIds.has(i.saleId))
+  // Voided sales are kept for audit and staff orders are kept for their own
+  // log, but neither counts toward revenue/analytics below — only "active"
+  // (non-voided, non-staff) sales/items feed those.
+  const excludedSaleIds = new Set(sales.filter(s => s.status === 'voided' || s.is_staff_order).map(s => s.id))
+  const activeSales = sales.filter(s => s.status !== 'voided' && !s.is_staff_order)
+  const activeSaleItems = saleItems.filter(i => !excludedSaleIds.has(i.saleId))
 
   const itemsBySale = new Map()
   saleItems.forEach(item => {
@@ -2449,7 +2673,11 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
     itemsBySale.get(item.saleId).push(item)
   })
   const transactionList = [...sales]
-    .filter(s => orderTypeFilter === 'all' || s.order_type === orderTypeFilter)
+    .filter(s => {
+      if (orderTypeFilter === 'all') return true
+      if (orderTypeFilter === 'staff') return s.is_staff_order
+      return s.order_type === orderTypeFilter
+    })
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 
   // Clearing, voiding, and editing all touch financial records, so each is
@@ -2767,6 +2995,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                 { key: 'all', label: 'All' },
                 { key: 'dine_in', label: 'Dine In' },
                 { key: 'take_out', label: 'Take Out' },
+                { key: 'staff', label: 'Staff Orders' },
               ].map(f => (
                 <button
                   key={f.key}
@@ -2786,13 +3015,18 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
           <div className="text-center py-16 text-[#a8977e]">
             <p className="text-4xl mb-3">🧾</p>
             <p className="font-medium text-[#2c2416]">
-              {sales.length === 0 ? 'No transactions yet' : `No ${orderTypeLabel(orderTypeFilter) || ''} transactions`}
+              {sales.length === 0
+                ? 'No transactions yet'
+                : orderTypeFilter === 'staff'
+                  ? 'No staff orders'
+                  : `No ${orderTypeLabel(orderTypeFilter) || ''} transactions`}
             </p>
           </div>
         ) : (
           <div className="divide-y divide-[#f5edd6]">
             {transactionList.map(sale => {
               const isVoided = sale.status === 'voided'
+              const isStaff = sale.is_staff_order
               const saleLineItems = itemsBySale.get(sale.id) || []
               const itemCount = saleLineItems.reduce((sum, i) => sum + i.qty, 0)
               return (
@@ -2820,13 +3054,15 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                   <div className="flex items-center gap-3 shrink-0">
                     {isVoided ? (
                       <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-[#fdf0ec] text-[#b85c42]">VOIDED</span>
+                    ) : isStaff ? (
+                      <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-[#fff8e6] text-[#c49a3c]" title="Excluded from sales revenue and reports">STAFF</span>
                     ) : (
                       <span className="hidden sm:inline text-xs px-2.5 py-1 rounded-full font-medium bg-[#f0faf0] text-[#6b9e72]">completed</span>
                     )}
                     <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(sale.total)}</span>
                     <TransactionMenu
                       onReprint={() => setReprintTarget(sale)}
-                      onEdit={!isVoided ? () => setEditPasswordTarget(sale) : undefined}
+                      onEdit={!isVoided && !isStaff ? () => setEditPasswordTarget(sale) : undefined}
                       onVoid={!isVoided ? () => setVoidTarget(sale) : undefined}
                     />
                   </div>
@@ -3042,8 +3278,10 @@ export default function App() {
   const [screen, setScreen] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showDrawerPassword, setShowDrawerPassword] = useState(false)
+  const [showStaffOrderPassword, setShowStaffOrderPassword] = useState(false)
   const [clock, setClock] = useState(() => new Date())
   const [cart, setCart] = useState([])
+  const [staffCart, setStaffCart] = useState([])
   const [isMobile, setIsMobile] = useState(false)
   const [items, setItems] = useState([])
   const [itemsLoading, setItemsLoading] = useState(true)
@@ -3137,6 +3375,17 @@ export default function App() {
     return sale
   }
 
+  // Staff orders reuse recordSale (still deducts stock for real) but flag
+  // is_staff_order so Dashboard/Reports revenue and analytics exclude them.
+  const chargeStaffOrder = async ({ customerName, items: saleItems, total }) => {
+    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod: 'staff', isStaffOrder: true })
+    setItems(prev => prev.map(p => {
+      const taken = saleItems.find(i => i.id === p.id)
+      return taken ? { ...p, stock: Math.max(0, p.stock - taken.qty) } : p
+    }))
+    return sale
+  }
+
   // Void/edit both restore or re-deduct stock server-side per line item —
   // simplest to just refetch products afterward rather than re-deriving the
   // same per-product deltas a second time on the client.
@@ -3181,7 +3430,34 @@ export default function App() {
   const clearCart = () => setCart([])
   const updateCartItemNote = (id, note) => setCart(prev => prev.map(i => i.id === id ? { ...i, note } : i))
 
+  // Separate cart so a staff order in progress never mixes with a regular
+  // customer order sitting in `cart`.
+  const addToStaffCart = product => {
+    setStaffCart(prev => {
+      const exists = prev.find(i => i.id === product.id)
+      if (exists) return prev.map(i => i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i)
+      return [...prev, { ...product, quantity: 1 }]
+    })
+  }
+  const updateStaffQty = (id, delta) => {
+    setStaffCart(prev =>
+      prev.map(i => i.id === id ? { ...i, quantity: i.quantity + delta } : i).filter(i => i.quantity > 0)
+    )
+  }
+  const removeFromStaffCart = id => setStaffCart(prev => prev.filter(i => i.id !== id))
+  const clearStaffCart = () => setStaffCart([])
+
+  // Gated before entry (not at completion) — the whole mode is sensitive,
+  // not just the final action, so verify before staff can even browse into
+  // "take items free" mode. Re-verified every time, same as Void/Edit/Drawer.
+  const handleStaffOrderPasswordConfirm = async password => {
+    await verifyStaffPassword(session?.user?.email, password)
+    setShowStaffOrderPassword(false)
+    setScreen('staffOrder')
+  }
+
   const cartCount = cart.reduce((s, i) => s + i.quantity, 0)
+  const staffCartCount = staffCart.reduce((s, i) => s + i.quantity, 0)
 
   if (session === undefined) {
     return (
@@ -3200,6 +3476,8 @@ export default function App() {
       case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} />
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
       case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
+      case 'staffOrder': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToStaffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} cart={staffCart} onNavigate={setScreen} checkoutScreen="staffOrderCheckout" isStaffMode />
+      case 'staffOrderCheckout': return <StaffOrderCheckout cart={staffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} onClearCart={clearStaffCart} onCharge={chargeStaffOrder} businessName={settings.businessName} onNavigate={setScreen} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers businessName={settings.businessName} />
       case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
@@ -3208,7 +3486,9 @@ export default function App() {
     }
   }
 
-  const navLabel = NAV_ITEMS.find(n => n.id === screen)?.label || ''
+  const navLabel = screen === 'staffOrder' || screen === 'staffOrderCheckout'
+    ? 'Staff Order'
+    : NAV_ITEMS.find(n => n.id === screen)?.label || ''
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#fff9ea]">
@@ -3272,6 +3552,29 @@ export default function App() {
               )}
             </button>
           ))}
+
+          {/* Staff Order — password-gated before entry, kept out of NAV_ITEMS
+              since it needs the password modal instead of a direct setScreen. */}
+          <button
+            onClick={() => setShowStaffOrderPassword(true)}
+            className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+              screen === 'staffOrder' || screen === 'staffOrderCheckout'
+                ? 'bg-[#ddcca6] text-[#2c2416]'
+                : 'text-[#a8977e] hover:bg-white/5 hover:text-[#e8ddc8]'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <span className={screen === 'staffOrder' || screen === 'staffOrderCheckout' ? 'text-[#2c2416]' : 'text-[#7a6a50]'}>
+                <IconCoffee />
+              </span>
+              Staff Order
+            </div>
+            {staffCartCount > 0 && (
+              <span className={`text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold ${
+                screen === 'staffOrder' || screen === 'staffOrderCheckout' ? 'bg-[#2c2416] text-[#ddcca6]' : 'bg-[#ddcca6] text-[#2c2416]'
+              }`}>{staffCartCount}</span>
+            )}
+          </button>
         </nav>
 
         {/* Footer */}
@@ -3378,6 +3681,16 @@ export default function App() {
           confirmLabel="Open Drawer"
           onConfirm={handleOpenDrawerConfirm}
           onClose={() => setShowDrawerPassword(false)}
+        />
+      )}
+
+      {showStaffOrderPassword && (
+        <PasswordConfirmModal
+          title="Staff Order"
+          message="Re-enter your account password to start a staff order. Items taken will deduct from stock but won't count toward sales revenue or reports."
+          confirmLabel="Continue"
+          onConfirm={handleStaffOrderPasswordConfirm}
+          onClose={() => setShowStaffOrderPassword(false)}
         />
       )}
     </div>

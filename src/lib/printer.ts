@@ -40,6 +40,7 @@ export interface ReceiptOrder {
   orderType?: string
   businessName?: string
   isReprint?: boolean
+  isStaffOrder?: boolean
 }
 
 // The peso sign (₱, U+20B1) isn't in the code pages most ESC/POS thermal
@@ -50,7 +51,7 @@ function formatMoneyForPrint(amount: number): string {
 }
 
 function paymentLabelForPrint(method?: string): string {
-  return method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : method === 'gcash' ? 'GCash' : (method || '—')
+  return method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : method === 'gcash' ? 'GCash' : method === 'staff' ? 'Staff' : (method || '—')
 }
 
 function orderTypeLabelForPrint(orderType?: string): string | null {
@@ -70,6 +71,13 @@ function itemNameForPrint(item: ReceiptItem): string {
 function reprintBanner(width: number): string {
   return centerLine('*** REPRINT ***', width)
     + centerLine(`Reprinted ${new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}`, width)
+}
+
+// Marks a slip as an employee meal/drink rather than a paying customer's
+// order — printed instead of/alongside the reprint banner so anyone
+// reviewing the paper trail can immediately tell it's excluded from sales.
+function staffOrderBanner(width: number): string {
+  return centerLine('*** STAFF ORDER ***', width)
 }
 
 function padLine(left: string, right: string, width = RECEIPT_WIDTH): string {
@@ -93,6 +101,9 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
 
   if (order.isReprint) {
     parts.push(reprintBanner(width))
+  }
+  if (order.isStaffOrder) {
+    parts.push(staffOrderBanner(width))
   }
   if (copyLabel) {
     parts.push(centerLine(copyLabel, width))
@@ -128,7 +139,7 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
     parts.push(padLine('Change', formatMoneyForPrint(order.change ?? 0), width))
   }
   parts.push(padLine('TOTAL', formatMoneyForPrint(order.total), width))
-  if (order.paymentMethod) {
+  if (order.paymentMethod && !order.isStaffOrder) {
     parts.push(wrapLine(`Payment: ${paymentLabelForPrint(order.paymentMethod)}`, width))
   }
   parts.push('\n')
@@ -152,6 +163,9 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
 
   if (order.isReprint) {
     parts.push(reprintBanner(width))
+  }
+  if (order.isStaffOrder) {
+    parts.push(staffOrderBanner(width))
   }
   parts.push(centerLine('KITCHEN COPY', width))
   parts.push(centerLine(
@@ -192,6 +206,9 @@ function buildBaristaReceiptText(order: ReceiptOrder): string {
 
   if (order.isReprint) {
     parts.push(reprintBanner(width))
+  }
+  if (order.isStaffOrder) {
+    parts.push(staffOrderBanner(width))
   }
   parts.push(centerLine('BARISTA COPY', width))
   parts.push(centerLine(
@@ -298,6 +315,23 @@ export async function openCashDrawer(): Promise<void> {
   await sendToPrinter(INIT + KICK_DRAWER, 'Open Cash Drawer')
 }
 
+/**
+ * Prints a receipt for a staff order (employee meal/drink) — Cafe Copy
+ * always (accountability record), plus Kitchen/Barista when relevant, same
+ * as a regular order. No Customer Copy (there's no paying customer) and no
+ * drawer kick (no cash changes hands). Every copy is stamped "STAFF ORDER".
+ */
+export async function printStaffOrderReceipt(order: ReceiptOrder): Promise<void> {
+  const staffOrder: ReceiptOrder = { ...order, isStaffOrder: true }
+  const hasFoodItems = order.items.some(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
+  const hasDrinkItems = order.items.some(item => item.category && DRINK_CATEGORIES.has(item.category))
+  const raw = buildReceiptText(staffOrder, 'CAFE COPY')
+    + (hasFoodItems ? buildKitchenReceiptText(staffOrder) : '')
+    + (hasDrinkItems ? buildBaristaReceiptText(staffOrder) : '')
+
+  await sendToPrinter(raw, `Staff Order${order.id ? ` #${order.id.slice(0, 8).toUpperCase()}` : ''}`, order.businessName)
+}
+
 export type ReprintCopyType = 'customer' | 'cafe' | 'kitchen' | 'barista'
 
 /**
@@ -309,6 +343,8 @@ export type ReprintCopyType = 'customer' | 'cafe' | 'kitchen' | 'barista'
  */
 export async function reprintReceipt(order: ReceiptOrder, copyType: ReprintCopyType): Promise<void> {
   const reprintOrder: ReceiptOrder = { ...order, isReprint: true }
+  // isStaffOrder passes through from the caller (order.isStaffOrder) so a
+  // reprinted staff-order slip still shows the STAFF ORDER banner.
   const raw = copyType === 'customer' ? buildReceiptText(reprintOrder, 'CUSTOMER COPY')
     : copyType === 'cafe' ? buildReceiptText(reprintOrder, 'CAFE COPY')
     : copyType === 'kitchen' ? buildKitchenReceiptText(reprintOrder)
