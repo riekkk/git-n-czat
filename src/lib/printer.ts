@@ -37,6 +37,7 @@ export interface ReceiptOrder {
   amountReceived?: number
   change?: number
   orderType?: string
+  note?: string
   businessName?: string
 }
 
@@ -89,6 +90,11 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   if (orderTypeLabel) {
     parts.push(centerLine(`Order Type: ${orderTypeLabel}`, width))
   }
+  // Staff note is café-facing prep context, not something a customer needs
+  // to see on their own copy, so it's gated to the Cafe Copy specifically.
+  if (copyLabel === 'CAFE COPY' && order.note && order.note.trim()) {
+    parts.push(wrapLine(`Note: ${order.note.trim()}`, width))
+  }
   parts.push(divider)
   parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
   parts.push(divider)
@@ -139,6 +145,9 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
   if (kitchenOrderTypeLabel) {
     parts.push(centerLine(`Order Type: ${kitchenOrderTypeLabel}`, width))
   }
+  if (order.note && order.note.trim()) {
+    parts.push(wrapLine(`Note: ${order.note.trim()}`, width))
+  }
   parts.push(divider)
 
   foodItems.forEach(item => {
@@ -174,6 +183,9 @@ function buildBaristaReceiptText(order: ReceiptOrder): string {
   const baristaOrderTypeLabel = orderTypeLabelForPrint(order.orderType)
   if (baristaOrderTypeLabel) {
     parts.push(centerLine(`Order Type: ${baristaOrderTypeLabel}`, width))
+  }
+  if (order.note && order.note.trim()) {
+    parts.push(wrapLine(`Note: ${order.note.trim()}`, width))
   }
   parts.push(divider)
 

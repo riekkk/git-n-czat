@@ -1284,6 +1284,7 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
 function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName, onNavigate }) {
   const [customerName, setCustomerName] = useState('')
   const [orderType, setOrderType] = useState('')
+  const [note, setNote] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('card')
   const [amountReceived, setAmountReceived] = useState('')
   const [paid, setPaid] = useState(false)
@@ -1314,6 +1315,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
         changeGiven: paymentMethod === 'cash' ? change : undefined,
         orderType,
+        note: note.trim() || undefined,
       })
       setCompletedSale({
         id: sale?.id,
@@ -1326,6 +1328,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
         change: paymentMethod === 'cash' ? change : undefined,
         orderType,
+        note: note.trim() || undefined,
       })
       setPaid(true)
     } catch (err) {
@@ -1351,6 +1354,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         amountReceived: completedSale.amountReceived,
         change: completedSale.change,
         orderType: completedSale.orderType,
+        note: completedSale.note,
         businessName,
       })
     } catch (err) {
@@ -1402,7 +1406,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
             {printingThermal ? 'Printing…' : 'Print Thermal Receipt'}
           </button>
           <button
-            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setOrderType(''); setCompletedSale(null); onNavigate('products') }}
+            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setOrderType(''); setNote(''); setCompletedSale(null); onNavigate('products') }}
             className="px-8 py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-medium hover:bg-[#3d3220] transition-colors"
           >
             New Order
@@ -1536,6 +1540,18 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
                 ))}
               </div>
               {!orderType && <p className="text-xs text-[#a8977e] mt-2">Select an order type to continue</p>}
+            </div>
+
+            {/* Note — optional special instructions, printed on Cafe/Kitchen/Barista copies only */}
+            <div className="mb-5">
+              <p className={labelClass}>Note (optional)</p>
+              <textarea
+                rows={2}
+                placeholder="e.g. less ice, no sugar, allergic to nuts"
+                value={note}
+                onChange={e => setNote(e.target.value)}
+                className={`${inputClass} resize-none`}
+              />
             </div>
 
             {/* Payment method */}
@@ -2881,8 +2897,8 @@ export default function App() {
     setItems(prev => prev.filter(i => i.id !== id))
   }
 
-  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType }) => {
-    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType })
+  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType, note }) => {
+    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType, note })
     // Reflect the stock decrement locally so Products/Inventory update without a refetch.
     setItems(prev => prev.map(p => {
       const sold = saleItems.find(i => i.id === p.id)
