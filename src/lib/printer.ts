@@ -24,6 +24,7 @@ export interface ReceiptItem {
   qty: number
   price: number
   category?: string
+  note?: string
 }
 
 export interface ReceiptOrder {
@@ -37,7 +38,6 @@ export interface ReceiptOrder {
   amountReceived?: number
   change?: number
   orderType?: string
-  note?: string
   businessName?: string
   isReprint?: boolean
 }
@@ -55,6 +55,13 @@ function paymentLabelForPrint(method?: string): string {
 
 function orderTypeLabelForPrint(orderType?: string): string | null {
   return orderType === 'dine_in' ? 'Dine In' : orderType === 'take_out' ? 'Take Out' : null
+}
+
+// Appends a per-item special-instruction note in parentheses right after
+// the item name (e.g. "Iced Caramel Macchiato (less ice, no whip)") — used
+// on Cafe/Kitchen/Barista copies only, never the Customer Copy.
+function itemNameForPrint(item: ReceiptItem): string {
+  return item.note && item.note.trim() ? `${item.name} (${item.note.trim()})` : item.name
 }
 
 // Stamped at the very top of a reprinted slip — with its own timestamp,
@@ -102,17 +109,15 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   if (orderTypeLabel) {
     parts.push(centerLine(`Order Type: ${orderTypeLabel}`, width))
   }
-  // Staff note is café-facing prep context, not something a customer needs
-  // to see on their own copy, so it's gated to the Cafe Copy specifically.
-  if (copyLabel === 'CAFE COPY' && order.note && order.note.trim()) {
-    parts.push(wrapLine(`Note: ${order.note.trim()}`, width))
-  }
   parts.push(divider)
   parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
   parts.push(divider)
 
+  // Per-item notes are café-facing prep context, not something a customer
+  // needs to see on their own copy, so they're gated to the Cafe Copy.
+  const showItemNotes = copyLabel === 'CAFE COPY'
   order.items.forEach(item => {
-    parts.push(wrapLine(item.name, width))
+    parts.push(wrapLine(showItemNotes ? itemNameForPrint(item) : item.name, width))
     parts.push(padLine(`${item.qty} x ${formatMoneyForPrint(item.price)}`, formatMoneyForPrint(item.price * item.qty), width))
   })
 
@@ -160,14 +165,11 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
   if (kitchenOrderTypeLabel) {
     parts.push(centerLine(`Order Type: ${kitchenOrderTypeLabel}`, width))
   }
-  if (order.note && order.note.trim()) {
-    parts.push(wrapLine(`Note: ${order.note.trim()}`, width))
-  }
   parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
   parts.push(divider)
 
   foodItems.forEach(item => {
-    parts.push(wrapLine(`${item.qty} x ${item.name}`, width))
+    parts.push(wrapLine(`${item.qty} x ${itemNameForPrint(item)}`, width))
   })
 
   parts.push(divider)
@@ -203,14 +205,11 @@ function buildBaristaReceiptText(order: ReceiptOrder): string {
   if (baristaOrderTypeLabel) {
     parts.push(centerLine(`Order Type: ${baristaOrderTypeLabel}`, width))
   }
-  if (order.note && order.note.trim()) {
-    parts.push(wrapLine(`Note: ${order.note.trim()}`, width))
-  }
   parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
   parts.push(divider)
 
   drinkItems.forEach(item => {
-    parts.push(wrapLine(`${item.qty} x ${item.name}`, width))
+    parts.push(wrapLine(`${item.qty} x ${itemNameForPrint(item)}`, width))
   })
 
   parts.push(divider)

@@ -481,7 +481,6 @@ function ReprintButtons({ order, items, businessName }) {
         amountReceived: order.amount_received,
         change: order.change_given,
         orderType: order.order_type,
-        note: order.note,
         businessName,
       }, copyType)
     } catch (err) {
@@ -1358,10 +1357,9 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
 }
 
 // ─── Checkout Screen ──────────────────────────────────────────────────────────
-function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName, onNavigate }) {
+function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCharge, businessName, onNavigate }) {
   const [customerName, setCustomerName] = useState('')
   const [orderType, setOrderType] = useState('')
-  const [note, setNote] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('card')
   const [amountReceived, setAmountReceived] = useState('')
   const [paid, setPaid] = useState(false)
@@ -1386,26 +1384,24 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
     try {
       const sale = await onCharge({
         customerName: resolvedCustomerName,
-        items: cart.map(i => ({ id: i.id, name: i.name, qty: i.quantity, price: i.price, category: i.category })),
+        items: cart.map(i => ({ id: i.id, name: i.name, qty: i.quantity, price: i.price, category: i.category, note: i.note?.trim() || undefined })),
         total,
         paymentMethod,
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
         changeGiven: paymentMethod === 'cash' ? change : undefined,
         orderType,
-        note: note.trim() || undefined,
       })
       setCompletedSale({
         id: sale?.id,
         createdAt: sale?.created_at || new Date().toISOString(),
         customerName: resolvedCustomerName,
-        items: cart.map(i => ({ name: i.name, qty: i.quantity, price: i.price, category: i.category })),
+        items: cart.map(i => ({ name: i.name, qty: i.quantity, price: i.price, category: i.category, note: i.note?.trim() || undefined })),
         subtotal,
         total,
         paymentMethod,
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
         change: paymentMethod === 'cash' ? change : undefined,
         orderType,
-        note: note.trim() || undefined,
       })
       setPaid(true)
     } catch (err) {
@@ -1431,7 +1427,6 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         amountReceived: completedSale.amountReceived,
         change: completedSale.change,
         orderType: completedSale.orderType,
-        note: completedSale.note,
         businessName,
       })
     } catch (err) {
@@ -1483,7 +1478,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
             {printingThermal ? 'Printing…' : 'Print Thermal Receipt'}
           </button>
           <button
-            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setOrderType(''); setNote(''); setCompletedSale(null); onNavigate('products') }}
+            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setOrderType(''); setCompletedSale(null); onNavigate('products') }}
             className="px-8 py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-medium hover:bg-[#3d3220] transition-colors"
           >
             New Order
@@ -1539,7 +1534,14 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
-                    <p className="text-xs text-[#a8977e]">{formatPHP(item.price)} each</p>
+                    <p className="text-xs text-[#a8977e] mb-1.5">{formatPHP(item.price)} each</p>
+                    <input
+                      type="text"
+                      placeholder="Add note (e.g. less ice, no whip)"
+                      value={item.note || ''}
+                      onChange={e => onUpdateNote(item.id, e.target.value)}
+                      className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-[#e8ddc8] text-[#2c2416] placeholder-[#c4ae88] focus:outline-none focus:border-[#ddcca6] focus:ring-1 focus:ring-[#ddcca6]/20 transition-all"
+                    />
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
@@ -1617,18 +1619,6 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
                 ))}
               </div>
               {!orderType && <p className="text-xs text-[#a8977e] mt-2">Select an order type to continue</p>}
-            </div>
-
-            {/* Note — optional special instructions, printed on Cafe/Kitchen/Barista copies only */}
-            <div className="mb-5">
-              <p className={labelClass}>Note (optional)</p>
-              <textarea
-                rows={2}
-                placeholder="e.g. less ice, no sugar, allergic to nuts"
-                value={note}
-                onChange={e => setNote(e.target.value)}
-                className={`${inputClass} resize-none`}
-              />
             </div>
 
             {/* Payment method */}
@@ -2274,7 +2264,7 @@ function EditTransactionModal({ sale, items: lineItems, onClose, onSave }) {
     setError('')
     try {
       await onSave({
-        items: activeItems.map(i => ({ productId: i.productId, name: i.name, qty: i.qty, price: i.price })),
+        items: activeItems.map(i => ({ productId: i.productId, name: i.name, qty: i.qty, price: i.price, note: i.note })),
         paymentMethod,
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : null,
         changeGiven: paymentMethod === 'cash' ? change : null,
@@ -3137,8 +3127,8 @@ export default function App() {
     setItems(prev => prev.filter(i => i.id !== id))
   }
 
-  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType, note }) => {
-    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType, note })
+  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType }) => {
+    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType })
     // Reflect the stock decrement locally so Products/Inventory update without a refetch.
     setItems(prev => prev.map(p => {
       const sold = saleItems.find(i => i.id === p.id)
@@ -3189,6 +3179,7 @@ export default function App() {
 
   const removeFromCart = id => setCart(prev => prev.filter(i => i.id !== id))
   const clearCart = () => setCart([])
+  const updateCartItemNote = (id, note) => setCart(prev => prev.map(i => i.id === id ? { ...i, note } : i))
 
   const cartCount = cart.reduce((s, i) => s + i.quantity, 0)
 
@@ -3208,7 +3199,7 @@ export default function App() {
     switch (screen) {
       case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} />
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
-      case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
+      case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers businessName={settings.businessName} />
       case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />

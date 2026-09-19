@@ -82,7 +82,7 @@ export async function updateProductStock(id, previousStock, newStock) {
   if (logError) throw logError
 }
 
-export async function recordSale({ customerName, items, total, paymentMethod, amountReceived, changeGiven, orderType, note }) {
+export async function recordSale({ customerName, items, total, paymentMethod, amountReceived, changeGiven, orderType }) {
   const { data: sale, error: saleError } = await supabase
     .from('sales')
     .insert({
@@ -92,7 +92,6 @@ export async function recordSale({ customerName, items, total, paymentMethod, am
       amount_received: paymentMethod === 'cash' ? amountReceived : null,
       change_given: paymentMethod === 'cash' ? changeGiven : null,
       order_type: orderType || null,
-      note: note?.trim() || null,
     })
     .select()
     .single()
@@ -104,6 +103,7 @@ export async function recordSale({ customerName, items, total, paymentMethod, am
     product_name: i.name,
     quantity: i.qty,
     unit_price: i.price,
+    note: i.note?.trim() || null,
   }))
   const { error: itemsError } = await supabase.from('sale_items').insert(lineItems)
   if (itemsError) throw itemsError
@@ -166,7 +166,7 @@ export async function fetchRecentSales(daysBack = 7) {
 export async function fetchAllSales() {
   const { data, error } = await supabase
     .from('sales')
-    .select('id, customer_name, total, payment_method, order_type, note, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given')
+    .select('id, customer_name, total, payment_method, order_type, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given')
     .order('created_at', { ascending: true })
   if (error) throw error
   return data.map(s => ({
@@ -198,9 +198,10 @@ export async function clearAllSales() {
 // Reports: all-time sale line items joined to product category + cost (for
 // Top Products, Category Breakdown, COGS/profit, and the transaction list's
 // per-order item detail). sale_id/product_id let callers exclude voided
-// sales' items from analytics and restore stock on void/edit.
+// sales' items from analytics and restore stock on void/edit. note is the
+// per-item special-instruction text entered at Checkout (e.g. "less ice").
 export async function fetchAllSaleItemsWithCategory() {
-  const { data, error } = await supabase.from('sale_items').select('sale_id, product_id, product_name, quantity, unit_price, products(category, cost_price)')
+  const { data, error } = await supabase.from('sale_items').select('sale_id, product_id, product_name, quantity, unit_price, note, products(category, cost_price)')
   if (error) throw error
   return data.map(item => ({
     saleId: item.sale_id,
@@ -208,6 +209,7 @@ export async function fetchAllSaleItemsWithCategory() {
     name: item.product_name,
     qty: item.quantity,
     price: Number(item.unit_price),
+    note: item.note || '',
     category: item.products?.category || 'Uncategorized',
     // Cost as of now, not at time of sale — the schema doesn't snapshot
     // historical cost, so this is today's cost_price applied retroactively.
@@ -296,6 +298,7 @@ export async function editSale(saleId, { items, paymentMethod, amountReceived, c
       product_name: i.name,
       quantity: i.qty,
       unit_price: i.price,
+      note: i.note?.trim() || null,
     }))
     const { error: insertError } = await supabase.from('sale_items').insert(lineItems)
     if (insertError) throw insertError
