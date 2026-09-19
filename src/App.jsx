@@ -2672,12 +2672,11 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
     if (!itemsBySale.has(item.saleId)) itemsBySale.set(item.saleId, [])
     itemsBySale.get(item.saleId).push(item)
   })
+  // Staff orders have their own dedicated log (sidebar) — Reports' history
+  // stays focused on real customer transactions.
   const transactionList = [...sales]
-    .filter(s => {
-      if (orderTypeFilter === 'all') return true
-      if (orderTypeFilter === 'staff') return s.is_staff_order
-      return s.order_type === orderTypeFilter
-    })
+    .filter(s => !s.is_staff_order)
+    .filter(s => orderTypeFilter === 'all' || s.order_type === orderTypeFilter)
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 
   // Clearing, voiding, and editing all touch financial records, so each is
@@ -2995,7 +2994,6 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                 { key: 'all', label: 'All' },
                 { key: 'dine_in', label: 'Dine In' },
                 { key: 'take_out', label: 'Take Out' },
-                { key: 'staff', label: 'Staff Orders' },
               ].map(f => (
                 <button
                   key={f.key}
@@ -3015,18 +3013,13 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
           <div className="text-center py-16 text-[#a8977e]">
             <p className="text-4xl mb-3">🧾</p>
             <p className="font-medium text-[#2c2416]">
-              {sales.length === 0
-                ? 'No transactions yet'
-                : orderTypeFilter === 'staff'
-                  ? 'No staff orders'
-                  : `No ${orderTypeLabel(orderTypeFilter) || ''} transactions`}
+              {sales.filter(s => !s.is_staff_order).length === 0 ? 'No transactions yet' : `No ${orderTypeLabel(orderTypeFilter) || ''} transactions`}
             </p>
           </div>
         ) : (
           <div className="divide-y divide-[#f5edd6]">
             {transactionList.map(sale => {
               const isVoided = sale.status === 'voided'
-              const isStaff = sale.is_staff_order
               const saleLineItems = itemsBySale.get(sale.id) || []
               const itemCount = saleLineItems.reduce((sum, i) => sum + i.qty, 0)
               return (
@@ -3054,15 +3047,13 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                   <div className="flex items-center gap-3 shrink-0">
                     {isVoided ? (
                       <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-[#fdf0ec] text-[#b85c42]">VOIDED</span>
-                    ) : isStaff ? (
-                      <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-[#fff8e6] text-[#c49a3c]" title="Excluded from sales revenue and reports">STAFF</span>
                     ) : (
                       <span className="hidden sm:inline text-xs px-2.5 py-1 rounded-full font-medium bg-[#f0faf0] text-[#6b9e72]">completed</span>
                     )}
                     <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(sale.total)}</span>
                     <TransactionMenu
                       onReprint={() => setReprintTarget(sale)}
-                      onEdit={!isVoided && !isStaff ? () => setEditPasswordTarget(sale) : undefined}
+                      onEdit={!isVoided ? () => setEditPasswordTarget(sale) : undefined}
                       onVoid={!isVoided ? () => setVoidTarget(sale) : undefined}
                     />
                   </div>
@@ -3120,6 +3111,180 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
       </Modal>
     )}
     </>
+  )
+}
+
+// ─── Staff Orders Log — employee meals/drinks only, pulled out of Reports so
+// it never mixes with real revenue figures. Read-only history of what was
+// taken, by whom, and when; Void/Reprint stay available (password-gated,
+// same as Reports) since staff orders can still be mistaken or need a copy.
+function StaffOrdersLog({ businessName, userEmail, onVoidTransaction }) {
+  const [sales, setSales] = useState([])
+  const [saleItems, setSaleItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [voidTarget, setVoidTarget] = useState(null)
+  const [reprintTarget, setReprintTarget] = useState(null)
+
+  const load = () => {
+    setLoading(true)
+    setError('')
+    Promise.all([api.fetchAllSales(), api.fetchAllSaleItemsWithCategory()])
+      .then(([salesRows, itemRows]) => {
+        setSales(salesRows)
+        setSaleItems(itemRows)
+      })
+      .catch(err => setError(err.message || 'Could not load staff orders'))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(load, [])
+
+  useEffect(() => {
+    const silentReload = () => {
+      Promise.all([api.fetchAllSales(), api.fetchAllSaleItemsWithCategory()])
+        .then(([salesRows, itemRows]) => {
+          setSales(salesRows)
+          setSaleItems(itemRows)
+        })
+        .catch(() => {})
+    }
+    const channel = supabase
+      .channel('staff-orders-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, silentReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sale_items' }, silentReload)
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [])
+
+  const itemsBySale = new Map()
+  saleItems.forEach(item => {
+    if (!itemsBySale.has(item.saleId)) itemsBySale.set(item.saleId, [])
+    itemsBySale.get(item.saleId).push(item)
+  })
+
+  const staffOrders = sales.filter(s => s.is_staff_order).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  const activeStaffOrders = staffOrders.filter(s => s.status !== 'voided')
+  const totalItemsTaken = activeStaffOrders.reduce((sum, s) => sum + (itemsBySale.get(s.id) || []).reduce((n, i) => n + i.qty, 0), 0)
+  const totalValueTaken = activeStaffOrders.reduce((sum, s) => sum + s.total, 0)
+
+  const handleVoidConfirm = async password => {
+    await verifyStaffPassword(userEmail, password)
+    await onVoidTransaction(voidTarget.id, userEmail)
+    setSales(prev => prev.map(s => s.id === voidTarget.id
+      ? { ...s, status: 'voided', voided_at: new Date().toISOString(), voided_by: userEmail }
+      : s
+    ))
+    setVoidTarget(null)
+  }
+
+  if (loading) {
+    return (
+      <div className="p-4 md:p-6 lg:p-8 max-w-5xl mx-auto">
+        <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416] mb-6">Staff Orders</h1>
+        <LoadingBlock label="Loading staff orders…" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="p-4 md:p-6 lg:p-8 max-w-5xl mx-auto">
+        <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416] mb-6">Staff Orders</h1>
+        <ErrorBlock message={error} onRetry={load} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-4 md:p-6 lg:p-8 max-w-5xl mx-auto">
+      <div className="mb-6">
+        <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416]">Staff Orders</h1>
+        <p className="text-sm text-[#a8977e] mt-0.5">Employee meals/drinks — excluded from sales revenue and reports</p>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="bg-white rounded-2xl p-5 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-2">Staff Orders</p>
+          <p style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-bold text-[#2c2416]">{activeStaffOrders.length}</p>
+        </div>
+        <div className="bg-white rounded-2xl p-5 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-2">Items Taken</p>
+          <p style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-bold text-[#2c2416]">{totalItemsTaken}</p>
+        </div>
+        <div className="bg-white rounded-2xl p-5 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-2">Value Taken</p>
+          <p style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-bold text-[#2c2416]">{formatPHP(totalValueTaken)}</p>
+          <p className="text-[10px] text-[#a8977e] mt-1">Not revenue — cost of goods given to staff</p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#f0e8d8]">
+          <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">History</h2>
+          <span className="text-xs text-[#a8977e]">{staffOrders.length} total</span>
+        </div>
+        {staffOrders.length === 0 ? (
+          <div className="text-center py-16 text-[#a8977e]">
+            <p className="text-4xl mb-3">☕</p>
+            <p className="font-medium text-[#2c2416]">No staff orders yet</p>
+            <p className="text-sm mt-1">Started from the "Staff Order" button in the sidebar</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-[#f5edd6]">
+            {staffOrders.map(sale => {
+              const isVoided = sale.status === 'voided'
+              const saleLineItems = itemsBySale.get(sale.id) || []
+              return (
+                <div key={sale.id} className={`flex items-start justify-between gap-4 px-5 py-4 ${isVoided ? 'opacity-50' : ''}`}>
+                  <div className="min-w-0">
+                    <p className={`text-sm font-medium text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{sale.customer_name || 'Staff'}</p>
+                    <p className="text-xs text-[#a8977e] mb-1.5">{new Date(sale.created_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                    {saleLineItems.length === 0 ? (
+                      <p className="text-xs text-[#a8977e]">No item detail recorded</p>
+                    ) : (
+                      <div className="space-y-0.5">
+                        {saleLineItems.map((item, i) => (
+                          <p key={i} className="text-xs text-[#7a6a50]">{item.qty} x {item.name}</p>
+                        ))}
+                      </div>
+                    )}
+                    {isVoided && sale.voided_at && (
+                      <p className="text-[10px] text-[#b85c42] mt-1">Voided {new Date(sale.voided_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {isVoided && <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-[#fdf0ec] text-[#b85c42]">VOIDED</span>}
+                    <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(sale.total)}</span>
+                    <TransactionMenu
+                      onReprint={() => setReprintTarget(sale)}
+                      onVoid={!isVoided ? () => setVoidTarget(sale) : undefined}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {voidTarget && (
+        <PasswordConfirmModal
+          title="Void Staff Order"
+          message={`This marks the ${formatPHP(voidTarget.total)} staff order for ${voidTarget.customer_name || 'Staff'} as voided and restores its items to stock. Re-enter your account password to confirm.`}
+          confirmLabel="Void Staff Order"
+          onConfirm={handleVoidConfirm}
+          onClose={() => setVoidTarget(null)}
+        />
+      )}
+
+      {reprintTarget && (
+        <Modal title={`Reprint Staff Order #${String(reprintTarget.id).slice(0, 8).toUpperCase()}`} onClose={() => setReprintTarget(null)}>
+          <p className="text-sm text-[#7a6a50] mb-4">Choose which copy to reprint.</p>
+          <ReprintButtons order={reprintTarget} items={itemsBySale.get(reprintTarget.id) || []} businessName={businessName} />
+        </Modal>
+      )}
+    </div>
   )
 }
 
@@ -3478,6 +3643,7 @@ export default function App() {
       case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
       case 'staffOrder': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToStaffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} cart={staffCart} onNavigate={setScreen} checkoutScreen="staffOrderCheckout" isStaffMode />
       case 'staffOrderCheckout': return <StaffOrderCheckout cart={staffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} onClearCart={clearStaffCart} onCharge={chargeStaffOrder} businessName={settings.businessName} onNavigate={setScreen} />
+      case 'staffOrdersLog': return <StaffOrdersLog businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers businessName={settings.businessName} />
       case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
@@ -3488,7 +3654,9 @@ export default function App() {
 
   const navLabel = screen === 'staffOrder' || screen === 'staffOrderCheckout'
     ? 'Staff Order'
-    : NAV_ITEMS.find(n => n.id === screen)?.label || ''
+    : screen === 'staffOrdersLog'
+      ? 'Staff Orders Log'
+      : NAV_ITEMS.find(n => n.id === screen)?.label || ''
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#fff9ea]">
@@ -3574,6 +3742,23 @@ export default function App() {
                 screen === 'staffOrder' || screen === 'staffOrderCheckout' ? 'bg-[#2c2416] text-[#ddcca6]' : 'bg-[#ddcca6] text-[#2c2416]'
               }`}>{staffCartCount}</span>
             )}
+          </button>
+
+          {/* Read-only log of staff orders — separate from Reports so it
+              never mixes with real revenue figures. No password needed to
+              view; Void/Reprint inside are still password-gated. */}
+          <button
+            onClick={() => setScreen('staffOrdersLog')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+              screen === 'staffOrdersLog'
+                ? 'bg-[#ddcca6] text-[#2c2416]'
+                : 'text-[#a8977e] hover:bg-white/5 hover:text-[#e8ddc8]'
+            }`}
+          >
+            <span className={screen === 'staffOrdersLog' ? 'text-[#2c2416]' : 'text-[#7a6a50]'}>
+              <IconFileText />
+            </span>
+            Staff Orders Log
           </button>
         </nav>
 
