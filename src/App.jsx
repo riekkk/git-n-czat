@@ -1854,14 +1854,19 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
 function Customers() {
   const [search, setSearch] = useState('')
   const [sales, setSales] = useState([])
+  const [saleItems, setSaleItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [selectedKey, setSelectedKey] = useState(null)
 
   const load = () => {
     setLoading(true)
     setError('')
-    api.fetchAllSales()
-      .then(setSales)
+    Promise.all([api.fetchAllSales(), api.fetchAllSaleItemsWithCategory()])
+      .then(([salesRows, itemRows]) => {
+        setSales(salesRows)
+        setSaleItems(itemRows)
+      })
       .catch(err => setError(err.message || 'Could not load customers'))
       .finally(() => setLoading(false))
   }
@@ -1870,27 +1875,48 @@ function Customers() {
 
   // Live sync: a sale rung up elsewhere updates customer stats without a refresh.
   useEffect(() => {
+    const silentReload = () => {
+      Promise.all([api.fetchAllSales(), api.fetchAllSaleItemsWithCategory()])
+        .then(([salesRows, itemRows]) => {
+          setSales(salesRows)
+          setSaleItems(itemRows)
+        })
+        .catch(() => {})
+    }
     const channel = supabase
       .channel('customers-sales-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, () => {
-        api.fetchAllSales().then(setSales).catch(() => {})
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, silentReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sale_items' }, silentReload)
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [])
 
+  const itemsBySale = new Map()
+  saleItems.forEach(item => {
+    if (!itemsBySale.has(item.saleId)) itemsBySale.set(item.saleId, [])
+    itemsBySale.get(item.saleId).push(item)
+  })
+
   // There's no separate customers table — "customer" here is derived live
   // from sales.customer_name, the same free-text field Checkout already
-  // collects. Grouped case-insensitively (trimmed) so casing differences
-  // ("Juan" vs "juan") don't split one customer into two; a blank name
-  // (or the literal "Walk-in" Checkout defaults to) all bucket into a
-  // single "Walk-in" entry rather than one row per anonymous order. Voided
-  // sales are excluded — a reversed order shouldn't count as a visit/spend.
+  // collects, so a name is the only link between a customer and their
+  // transactions. Grouped case-insensitively (trimmed) so casing
+  // differences ("Juan" vs "juan") don't split one customer into two; a
+  // blank name (or the literal "Walk-in" Checkout defaults to) all bucket
+  // into a single "Walk-in" entry rather than one row per anonymous order.
+  // Summary cards exclude voided sales (a reversed order shouldn't count as
+  // a visit/spend), but salesByKey keeps every sale — including voided —
+  // so the detail view can still show the full history for audit purposes.
   const customerMap = new Map()
-  sales.filter(s => s.status !== 'voided').forEach(sale => {
+  const salesByKey = new Map()
+  sales.forEach(sale => {
     const displayName = (sale.customer_name || '').trim() || 'Walk-in'
     const key = displayName.toLowerCase()
-    const entry = customerMap.get(key) || { name: displayName, orders: 0, totalSpent: 0, lastOrderAt: sale.created_at }
+    if (!salesByKey.has(key)) salesByKey.set(key, [])
+    salesByKey.get(key).push(sale)
+
+    if (sale.status === 'voided') return
+    const entry = customerMap.get(key) || { key, name: displayName, orders: 0, totalSpent: 0, lastOrderAt: sale.created_at }
     entry.orders += 1
     entry.totalSpent += sale.total
     if (new Date(sale.created_at) > new Date(entry.lastOrderAt)) entry.lastOrderAt = sale.created_at
@@ -1898,6 +1924,11 @@ function Customers() {
   })
   const customers = Array.from(customerMap.values()).sort((a, b) => b.totalSpent - a.totalSpent)
   const filtered = customers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
+
+  const selectedCustomer = customers.find(c => c.key === selectedKey) || null
+  const selectedOrders = selectedKey
+    ? [...(salesByKey.get(selectedKey) || [])].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    : []
 
   return (
     <div className="p-4 md:p-6 lg:p-8 max-w-5xl mx-auto">
@@ -1935,7 +1966,11 @@ function Customers() {
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map(c => (
-            <div key={c.name} className="bg-white rounded-2xl border border-[#f0e8d8] p-5 shadow-[0_1px_8px_rgba(44,36,22,0.05)] hover:shadow-[0_4px_20px_rgba(44,36,22,0.10)] hover:-translate-y-0.5 transition-all duration-200">
+            <button
+              key={c.key}
+              onClick={() => setSelectedKey(c.key)}
+              className="text-left w-full bg-white rounded-2xl border border-[#f0e8d8] p-5 shadow-[0_1px_8px_rgba(44,36,22,0.05)] hover:shadow-[0_4px_20px_rgba(44,36,22,0.10)] hover:-translate-y-0.5 hover:border-[#ddcca6] transition-all duration-200"
+            >
               <div className="flex items-center gap-3 mb-4">
                 <div className="w-10 h-10 rounded-xl bg-[#fff9ea] border border-[#e8ddc8] flex items-center justify-center text-lg font-semibold text-[#7a6a50] shrink-0">
                   {c.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
@@ -1957,9 +1992,64 @@ function Customers() {
                   <p className="font-semibold text-[#2c2416]">{formatPHP(c.totalSpent)}</p>
                 </div>
               </div>
-            </div>
+            </button>
           ))}
         </div>
+      )}
+
+      {selectedCustomer && (
+        <Modal title={selectedCustomer.name} onClose={() => setSelectedKey(null)}>
+          <div className="grid grid-cols-2 gap-3 mb-5">
+            <div className="text-center bg-[#fffcf5] rounded-xl px-3 py-3 border border-[#f0e8d8]">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1">Total Orders</p>
+              <p className="font-semibold text-[#2c2416]">{selectedCustomer.orders}</p>
+            </div>
+            <div className="text-center bg-[#fffcf5] rounded-xl px-3 py-3 border border-[#f0e8d8]">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1">Total Spent</p>
+              <p className="font-semibold text-[#2c2416]">{formatPHP(selectedCustomer.totalSpent)}</p>
+            </div>
+          </div>
+
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#a8977e] mb-3">Order History</h3>
+          {selectedOrders.length === 0 ? (
+            <p className="text-sm text-[#a8977e] text-center py-8">No orders found</p>
+          ) : (
+            <div className="space-y-3 max-h-[50vh] overflow-y-auto">
+              {selectedOrders.map(order => {
+                const isVoided = order.status === 'voided'
+                const orderItems = itemsBySale.get(order.id) || []
+                return (
+                  <div key={order.id} className={`border border-[#f0e8d8] rounded-xl p-4 ${isVoided ? 'opacity-60' : ''}`}>
+                    <div className="flex items-center justify-between gap-3 mb-1">
+                      <p className="text-sm font-medium text-[#2c2416]">
+                        {new Date(order.created_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}
+                      </p>
+                      <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(order.total)}</span>
+                    </div>
+                    <p className="text-xs text-[#a8977e] mb-3">
+                      {paymentLabel(order.payment_method)}
+                      {orderTypeLabel(order.order_type) && ` · ${orderTypeLabel(order.order_type)}`}
+                      {isVoided && ' · '}
+                      {isVoided && <span className="text-[#b85c42] font-medium">VOIDED</span>}
+                    </p>
+                    {orderItems.length === 0 ? (
+                      <p className="text-xs text-[#a8977e]">No item detail recorded</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {orderItems.map((item, i) => (
+                          <div key={i} className="flex justify-between text-xs text-[#7a6a50]">
+                            <span>{item.qty} x {item.name}</span>
+                            <span>{formatPHP(item.price * item.qty)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </Modal>
       )}
     </div>
   )
