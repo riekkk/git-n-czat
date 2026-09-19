@@ -36,6 +36,7 @@ export interface ReceiptOrder {
   paymentMethod?: string
   amountReceived?: number
   change?: number
+  orderType?: string
   businessName?: string
 }
 
@@ -48,6 +49,10 @@ function formatMoneyForPrint(amount: number): string {
 
 function paymentLabelForPrint(method?: string): string {
   return method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : method === 'gcash' ? 'GCash' : (method || '—')
+}
+
+function orderTypeLabelForPrint(orderType?: string): string | null {
+  return orderType === 'dine_in' ? 'Dine In' : orderType === 'take_out' ? 'Take Out' : null
 }
 
 function padLine(left: string, right: string, width = RECEIPT_WIDTH): string {
@@ -79,6 +84,10 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   ))
   if (order.id) {
     parts.push(centerLine(`Order #${order.id.slice(0, 8).toUpperCase()}`, width))
+  }
+  const orderTypeLabel = orderTypeLabelForPrint(order.orderType)
+  if (orderTypeLabel) {
+    parts.push(centerLine(`Order Type: ${orderTypeLabel}`, width))
   }
   parts.push(divider)
   parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
@@ -126,6 +135,10 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
   if (order.id) {
     parts.push(centerLine(`Order #${order.id.slice(0, 8).toUpperCase()}`, width))
   }
+  const kitchenOrderTypeLabel = orderTypeLabelForPrint(order.orderType)
+  if (kitchenOrderTypeLabel) {
+    parts.push(centerLine(`Order Type: ${kitchenOrderTypeLabel}`, width))
+  }
   parts.push(divider)
 
   foodItems.forEach(item => {
@@ -157,6 +170,10 @@ function buildBaristaReceiptText(order: ReceiptOrder): string {
   ))
   if (order.id) {
     parts.push(centerLine(`Order #${order.id.slice(0, 8).toUpperCase()}`, width))
+  }
+  const baristaOrderTypeLabel = orderTypeLabelForPrint(order.orderType)
+  if (baristaOrderTypeLabel) {
+    parts.push(centerLine(`Order Type: ${baristaOrderTypeLabel}`, width))
   }
   parts.push(divider)
 

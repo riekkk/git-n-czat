@@ -1226,14 +1226,15 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
 }
 
 // ─── Receipt (print-only — hidden on screen, see .receipt-print in index.css) ─
-function Receipt({ businessName, saleId, createdAt, customerName, items, subtotal, total, paymentMethod, amountReceived, change }) {
-  const paymentLabel = paymentMethod === 'card' ? 'Card' : paymentMethod === 'cash' ? 'Cash' : 'GCash'
+function Receipt({ businessName, saleId, createdAt, customerName, items, subtotal, total, paymentMethod, amountReceived, change, orderType }) {
+  const paymentMethodLabel = paymentMethod === 'card' ? 'Card' : paymentMethod === 'cash' ? 'Cash' : 'GCash'
   return (
     <div className="receipt-print font-mono text-black bg-white text-[11px] leading-snug w-[80mm] mx-auto p-3">
       <div className="text-center mb-2">
         <p className="font-bold text-sm uppercase tracking-wide">{businessName}</p>
         <p>{new Date(createdAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
         <p>Order #{String(saleId || '').slice(0, 8).toUpperCase()}</p>
+        {orderTypeLabel(orderType) && <p>Order Type: {orderTypeLabel(orderType)}</p>}
       </div>
       <div className="border-t border-dashed border-black my-1.5" />
       <p>Customer: {customerName || 'Walk-in'}</p>
@@ -1270,7 +1271,7 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
       </div>
       <div className="flex justify-between mt-1">
         <span>Payment</span>
-        <span>{paymentLabel}</span>
+        <span>{paymentMethodLabel}</span>
       </div>
       <div className="border-t border-dashed border-black my-2" />
       <p className="text-center">Thank you for your purchase!</p>
@@ -1282,6 +1283,7 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
 // ─── Checkout Screen ──────────────────────────────────────────────────────────
 function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, businessName, onNavigate }) {
   const [customerName, setCustomerName] = useState('')
+  const [orderType, setOrderType] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('card')
   const [amountReceived, setAmountReceived] = useState('')
   const [paid, setPaid] = useState(false)
@@ -1299,7 +1301,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
   const cashInsufficient = paymentMethod === 'cash' && (amountReceived === '' || amountReceivedNum < total)
 
   const handleCharge = async () => {
-    if (cashInsufficient) return
+    if (cashInsufficient || !orderType) return
     setCharging(true)
     setChargeError('')
     const resolvedCustomerName = customerName.trim() || 'Walk-in'
@@ -1311,6 +1313,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         paymentMethod,
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
         changeGiven: paymentMethod === 'cash' ? change : undefined,
+        orderType,
       })
       setCompletedSale({
         id: sale?.id,
@@ -1322,6 +1325,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         paymentMethod,
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
         change: paymentMethod === 'cash' ? change : undefined,
+        orderType,
       })
       setPaid(true)
     } catch (err) {
@@ -1346,6 +1350,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         paymentMethod: completedSale.paymentMethod,
         amountReceived: completedSale.amountReceived,
         change: completedSale.change,
+        orderType: completedSale.orderType,
         businessName,
       })
     } catch (err) {
@@ -1377,7 +1382,10 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
         <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416] mb-2">Payment Successful</h2>
         <p className="text-[#a8977e] mb-1">Total charged: <strong className="text-[#2c2416]">{formatPHP(total)}</strong></p>
         <p className="text-[#a8977e] mb-1">Customer: <strong className="text-[#2c2416]">{customerName.trim() || 'Walk-in'}</strong></p>
-        <p className="text-sm text-[#a8977e] mb-8">via {paymentMethod === 'card' ? 'Credit/Debit Card' : paymentMethod === 'cash' ? 'Cash' : 'GCash'}</p>
+        <p className="text-sm text-[#a8977e] mb-8">
+          via {paymentMethod === 'card' ? 'Credit/Debit Card' : paymentMethod === 'cash' ? 'Cash' : 'GCash'}
+          {orderTypeLabel(orderType) && ` · ${orderTypeLabel(orderType)}`}
+        </p>
         <div className="flex items-center gap-3 flex-wrap justify-center">
           <button
             onClick={() => window.print()}
@@ -1394,7 +1402,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
             {printingThermal ? 'Printing…' : 'Print Thermal Receipt'}
           </button>
           <button
-            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setCompletedSale(null); onNavigate('products') }}
+            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setOrderType(''); setCompletedSale(null); onNavigate('products') }}
             className="px-8 py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-medium hover:bg-[#3d3220] transition-colors"
           >
             New Order
@@ -1413,6 +1421,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
             paymentMethod={completedSale.paymentMethod}
             amountReceived={completedSale.amountReceived}
             change={completedSale.change}
+            orderType={completedSale.orderType}
           />
         )}
       </div>
@@ -1508,6 +1517,27 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
               </div>
             </div>
 
+            {/* Order type — required before checkout can complete */}
+            <div className="mb-5">
+              <p className="text-xs text-[#a8977e] font-medium mb-2">Order Type</p>
+              <div className="grid grid-cols-2 gap-2">
+                {['dine_in', 'take_out'].map(type => (
+                  <button
+                    key={type}
+                    onClick={() => setOrderType(type)}
+                    className={`py-2.5 rounded-xl text-xs font-medium transition-all ${
+                      orderType === type
+                        ? 'bg-[#2c2416] text-[#ddcca6]'
+                        : 'border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'
+                    }`}
+                  >
+                    {type === 'dine_in' ? '🍽️ Dine In' : '🥡 Take Out'}
+                  </button>
+                ))}
+              </div>
+              {!orderType && <p className="text-xs text-[#a8977e] mt-2">Select an order type to continue</p>}
+            </div>
+
             {/* Payment method */}
             <div className="mb-5">
               <p className="text-xs text-[#a8977e] font-medium mb-2">Payment Method</p>
@@ -1560,7 +1590,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onClearCart, onCharge, business
             {/* Charge button */}
             <button
               onClick={handleCharge}
-              disabled={charging || cashInsufficient}
+              disabled={charging || cashInsufficient || !orderType}
               className="w-full py-4 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold text-base hover:bg-[#3d3220] active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
             >
               {charging && <Spinner className="w-4 h-4" />}
@@ -1883,6 +1913,10 @@ function paymentLabel(method) {
   return method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : method === 'gcash' ? 'GCash' : (method || '—')
 }
 
+function orderTypeLabel(type) {
+  return type === 'dine_in' ? 'Dine In' : type === 'take_out' ? 'Take Out' : null
+}
+
 function exportSalesToExcel(sales, businessName) {
   const rows = sales.map(s => ({
     'Order ID': String(s.id).slice(0, 8).toUpperCase(),
@@ -2127,6 +2161,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
   const [voidTarget, setVoidTarget] = useState(null)
   const [editPasswordTarget, setEditPasswordTarget] = useState(null)
   const [editingSale, setEditingSale] = useState(null)
+  const [orderTypeFilter, setOrderTypeFilter] = useState('all')
   const now = new Date()
 
   const load = () => {
@@ -2173,7 +2208,9 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
     if (!itemsBySale.has(item.saleId)) itemsBySale.set(item.saleId, [])
     itemsBySale.get(item.saleId).push(item)
   })
-  const transactionList = [...sales].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  const transactionList = [...sales]
+    .filter(s => orderTypeFilter === 'all' || s.order_type === orderTypeFilter)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 
   // Clearing, voiding, and editing all touch financial records, so each is
   // gated behind re-entering the signed-in staff account's login password —
@@ -2482,14 +2519,35 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
 
       {/* Transaction history — void/edit gated behind re-entering the staff password */}
       <div className="mt-6 bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#f0e8d8]">
+        <div className="flex items-center justify-between gap-3 flex-wrap px-5 py-4 border-b border-[#f0e8d8]">
           <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">Transaction History</h2>
-          <span className="text-xs text-[#a8977e]">{sales.length} total</span>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 bg-[#fff9ea] border border-[#e8ddc8] rounded-full p-1">
+              {[
+                { key: 'all', label: 'All' },
+                { key: 'dine_in', label: 'Dine In' },
+                { key: 'take_out', label: 'Take Out' },
+              ].map(f => (
+                <button
+                  key={f.key}
+                  onClick={() => setOrderTypeFilter(f.key)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                    orderTypeFilter === f.key ? 'bg-[#2c2416] text-[#ddcca6]' : 'text-[#7a6a50] hover:text-[#2c2416]'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs text-[#a8977e]">{sales.length} total</span>
+          </div>
         </div>
         {transactionList.length === 0 ? (
           <div className="text-center py-16 text-[#a8977e]">
             <p className="text-4xl mb-3">🧾</p>
-            <p className="font-medium text-[#2c2416]">No transactions yet</p>
+            <p className="font-medium text-[#2c2416]">
+              {sales.length === 0 ? 'No transactions yet' : `No ${orderTypeLabel(orderTypeFilter) || ''} transactions`}
+            </p>
           </div>
         ) : (
           <div className="divide-y divide-[#f5edd6]">
@@ -2509,6 +2567,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                       </p>
                       <p className="text-xs text-[#a8977e]">
                         {itemCount} item{itemCount !== 1 ? 's' : ''} · {new Date(sale.created_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })} · {paymentLabel(sale.payment_method)}
+                        {orderTypeLabel(sale.order_type) && ` · ${orderTypeLabel(sale.order_type)}`}
                       </p>
                       {isVoided && sale.voided_at && (
                         <p className="text-[10px] text-[#b85c42] mt-0.5">Voided {new Date(sale.voided_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
@@ -2822,8 +2881,8 @@ export default function App() {
     setItems(prev => prev.filter(i => i.id !== id))
   }
 
-  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven }) => {
-    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven })
+  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType }) => {
+    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType })
     // Reflect the stock decrement locally so Products/Inventory update without a refetch.
     setItems(prev => prev.map(p => {
       const sold = saleItems.find(i => i.id === p.id)
