@@ -163,6 +163,7 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
   if (order.note && order.note.trim()) {
     parts.push(wrapLine(`Note: ${order.note.trim()}`, width))
   }
+  parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
   parts.push(divider)
 
   foodItems.forEach(item => {
@@ -205,6 +206,7 @@ function buildBaristaReceiptText(order: ReceiptOrder): string {
   if (order.note && order.note.trim()) {
     parts.push(wrapLine(`Note: ${order.note.trim()}`, width))
   }
+  parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
   parts.push(divider)
 
   drinkItems.forEach(item => {
