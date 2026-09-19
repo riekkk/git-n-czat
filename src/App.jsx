@@ -1211,7 +1211,8 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filtered.map(product => {
               const inCart = cart.find(i => i.id === product.id)
-              const lowStock = product.stock < 15
+              const outOfStock = product.stock === 0
+              const lowStock = !outOfStock && product.stock < 15
               return (
                 <div
                   key={product.id}
@@ -1225,6 +1226,9 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
                   <div className="p-4">
                     <div className="flex items-start justify-between gap-1 mb-1">
                       <p className="text-sm font-semibold text-[#2c2416] leading-snug">{product.name}</p>
+                      {outOfStock && (
+                        <span className="shrink-0 text-[10px] bg-[#fdf0ec] text-[#b85c42] px-1.5 py-0.5 rounded-full font-medium">No Stock</span>
+                      )}
                       {lowStock && (
                         <span className="shrink-0 text-[10px] bg-[#fdf0ec] text-[#b85c42] px-1.5 py-0.5 rounded-full font-medium">Low</span>
                       )}
@@ -1234,13 +1238,16 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
                       <span style={{ fontFamily: 'var(--font-serif)' }} className="text-base font-semibold text-[#2c2416]">{formatPHP(product.price)}</span>
                       <button
                         onClick={() => onAddToCart(product)}
+                        disabled={outOfStock}
                         className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                          inCart
-                            ? 'bg-[#ddcca6] text-[#2c2416]'
-                            : 'bg-[#2c2416] text-[#ddcca6] hover:bg-[#3d3220]'
+                          outOfStock
+                            ? 'bg-[#f0e8d8] text-[#a8977e] cursor-not-allowed'
+                            : inCart
+                              ? 'bg-[#ddcca6] text-[#2c2416]'
+                              : 'bg-[#2c2416] text-[#ddcca6] hover:bg-[#3d3220]'
                         }`}
                       >
-                        {inCart ? `× ${inCart.quantity}` : <><IconPlus /> Add</>}
+                        {outOfStock ? 'No Stock' : inCart ? `× ${inCart.quantity}` : <><IconPlus /> Add</>}
                       </button>
                     </div>
                   </div>
