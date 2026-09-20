@@ -50,6 +50,33 @@ function formatMoneyForPrint(amount: number): string {
   return `P ${amount.toFixed(2)}`
 }
 
+// Free text (business name, customer name, item names, notes) comes from
+// user input and can carry curly quotes, em-dashes, accented letters, or
+// stray Unicode — none of which are safe to send as raw bytes. The Xprinter
+// XP-T80Q's active code page (Page0) is a single-byte table that only
+// matches Unicode for the plain ASCII range (0x20-0x7E); any byte above
+// that renders under whatever glyph Page0 assigns it, not the Unicode
+// character we meant (e.g. an accented "é" turning into a box-drawing
+// character or a Greek letter) — that's the "foreign/garbled characters"
+// bug. Rather than guessing the right ESC/POS "select code page" command
+// for a table we haven't verified, this folds text down to plain ASCII,
+// which prints identically under any single-byte code page:
+//   - decomposes accented Latin letters and drops the accent (é → e)
+//   - maps curly quotes/dashes/ellipsis to their plain ASCII equivalents
+//   - replaces the peso sign and anything else left with 'P' / '?'
+function sanitizeForPrint(text?: string): string {
+  if (!text) return text || ''
+  return text
+    .replace(/₱/g, 'P')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[‘’‚′]/g, "'")
+    .replace(/[“”„″]/g, '"')
+    .replace(/[–—]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/[^\x20-\x7E]/g, '?')
+}
+
 function paymentLabelForPrint(method?: string): string {
   return method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : method === 'gcash' ? 'GCash' : method === 'staff' ? 'Staff' : (method || '—')
 }
@@ -62,7 +89,9 @@ function orderTypeLabelForPrint(orderType?: string): string | null {
 // the item name (e.g. "Iced Caramel Macchiato (less ice, no whip)") — used
 // on Cafe/Kitchen/Barista copies only, never the Customer Copy.
 function itemNameForPrint(item: ReceiptItem): string {
-  return item.note && item.note.trim() ? `${item.name} (${item.note.trim()})` : item.name
+  const name = sanitizeForPrint(item.name)
+  const note = sanitizeForPrint(item.note?.trim())
+  return note ? `${name} (${note})` : name
 }
 
 // Stamped at the very top of a reprinted slip — with its own timestamp,
@@ -108,7 +137,7 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   if (copyLabel) {
     parts.push(centerLine(copyLabel, width))
   }
-  parts.push(centerLine((order.businessName || 'Receipt').toUpperCase(), width))
+  parts.push(centerLine(sanitizeForPrint(order.businessName || 'Receipt').toUpperCase(), width))
   parts.push(centerLine(
     new Date(order.createdAt || Date.now()).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }),
     width
@@ -121,14 +150,14 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
     parts.push(centerLine(`Order Type: ${orderTypeLabel}`, width))
   }
   parts.push(divider)
-  parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
+  parts.push(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width))
   parts.push(divider)
 
   // Per-item notes are café-facing prep context, not something a customer
   // needs to see on their own copy, so they're gated to the Cafe Copy.
   const showItemNotes = copyLabel === 'CAFE COPY'
   order.items.forEach(item => {
-    parts.push(wrapLine(showItemNotes ? itemNameForPrint(item) : item.name, width))
+    parts.push(wrapLine(showItemNotes ? itemNameForPrint(item) : sanitizeForPrint(item.name), width))
     parts.push(padLine(`${item.qty} x ${formatMoneyForPrint(item.price)}`, formatMoneyForPrint(item.price * item.qty), width))
   })
 
@@ -179,7 +208,7 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
   if (kitchenOrderTypeLabel) {
     parts.push(centerLine(`Order Type: ${kitchenOrderTypeLabel}`, width))
   }
-  parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
+  parts.push(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width))
   parts.push(divider)
 
   foodItems.forEach(item => {
@@ -222,7 +251,7 @@ function buildBaristaReceiptText(order: ReceiptOrder): string {
   if (baristaOrderTypeLabel) {
     parts.push(centerLine(`Order Type: ${baristaOrderTypeLabel}`, width))
   }
-  parts.push(wrapLine(`Customer: ${order.customerName || 'Walk-in'}`, width))
+  parts.push(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width))
   parts.push(divider)
 
   drinkItems.forEach(item => {
