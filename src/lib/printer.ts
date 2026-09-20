@@ -19,12 +19,27 @@ const FULL_CUT = `${GS}V\x00`
 // into the printer's RJ11/RJ12 drawer-kick port.
 const KICK_DRAWER = `${ESC}p\x00\x19\xFA`
 
+export interface ReceiptAddOn {
+  name: string
+  price: number
+  productId?: string | null
+}
+
 export interface ReceiptItem {
   name: string
   qty: number
   price: number
   category?: string
   note?: string
+  addOns?: ReceiptAddOn[]
+}
+
+// Sum of an item's selected add-ons' prices — add-ons are billable, unlike
+// the free-text note, so this rolls into the line's displayed unit price
+// wherever a receipt shows one (never on Kitchen/Barista, which show no
+// prices at all).
+function addOnsCost(item: ReceiptItem): number {
+  return (item.addOns || []).reduce((sum, a) => sum + (a.price || 0), 0)
 }
 
 export interface ReceiptOrder {
@@ -85,11 +100,16 @@ function orderTypeLabelForPrint(orderType?: string): string | null {
   return orderType === 'dine_in' ? 'Dine In' : orderType === 'take_out' ? 'Take Out' : null
 }
 
-// Appends a per-item special-instruction note in parentheses right after
-// the item name (e.g. "Iced Caramel Macchiato (less ice, no whip)") — used
-// on Cafe/Kitchen/Barista copies only, never the Customer Copy.
-function itemNameForPrint(item: ReceiptItem): string {
-  const name = sanitizeForPrint(item.name)
+// Builds the printed item name: base name, then selected add-ons joined
+// with "+", then (optionally) the free-text note in parentheses — e.g.
+// "Iced Caramel Macchiato + Extra Shot, Oat Milk (less ice)". Add-ons are
+// billable so they print on every copy including Customer; the note is
+// internal prep context, so callers on the Customer Copy pass
+// includeNote=false to omit just that part.
+function itemNameForPrint(item: ReceiptItem, includeNote = true): string {
+  const addOnNames = (item.addOns || []).map(a => sanitizeForPrint(a.name)).join(', ')
+  const name = sanitizeForPrint(item.name) + (addOnNames ? ` + ${addOnNames}` : '')
+  if (!includeNote) return name
   const note = sanitizeForPrint(item.note?.trim())
   return note ? `${name} (${note})` : name
 }
@@ -154,11 +174,13 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   parts.push(divider)
 
   // Per-item notes are café-facing prep context, not something a customer
-  // needs to see on their own copy, so they're gated to the Cafe Copy.
+  // needs to see on their own copy, so they're gated to the Cafe Copy —
+  // add-ons print on both since they're billable and change the line price.
   const showItemNotes = copyLabel === 'CAFE COPY'
   order.items.forEach(item => {
-    parts.push(wrapLine(showItemNotes ? itemNameForPrint(item) : sanitizeForPrint(item.name), width))
-    parts.push(padLine(`${item.qty} x ${formatMoneyForPrint(item.price)}`, formatMoneyForPrint(item.price * item.qty), width))
+    const unitPrice = item.price + addOnsCost(item)
+    parts.push(wrapLine(itemNameForPrint(item, showItemNotes), width))
+    parts.push(padLine(`${item.qty} x ${formatMoneyForPrint(unitPrice)}`, formatMoneyForPrint(unitPrice * item.qty), width))
   })
 
   parts.push(divider)

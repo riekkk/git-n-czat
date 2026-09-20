@@ -2,6 +2,12 @@ import { supabase } from './supabase'
 
 const LOW_STOCK_THRESHOLD = 15
 
+// Sum of an item's selected add-ons' prices — used wherever a line total
+// needs to reflect add-ons (billable, unlike the free-text note).
+function addOnsCost(item) {
+  return (item.addOns || []).reduce((sum, a) => sum + (a.price || 0), 0)
+}
+
 // The `emoji` column is the historical name from the agreed schema; the
 // product form now uploads a photo (base64 data URL) into it instead of a
 // literal emoji character. `image` is the field name the UI works with.
@@ -105,12 +111,15 @@ export async function recordSale({ customerName, items, total, paymentMethod, am
     quantity: i.qty,
     unit_price: i.price,
     note: i.note?.trim() || null,
+    add_ons: (i.addOns || []).map(a => ({ productId: a.productId || null, name: a.name, price: a.price || 0 })),
   }))
   const { error: itemsError } = await supabase.from('sale_items').insert(lineItems)
   if (itemsError) throw itemsError
 
-  // Decrement stock per purchased product. Fetch-then-update rather than a
-  // blind decrement so we never write a stale value; not fully atomic under
+  // Decrement stock per purchased product, and per add-on product used (one
+  // add-on unit per parent unit ordered — a line quantity of 3 with an
+  // "Extra Shot" add-on uses 3 shots). Fetch-then-update rather than a blind
+  // decrement so we never write a stale value; not fully atomic under
   // concurrent checkouts, but this app runs from a single POS terminal.
   for (const i of items) {
     const { data: current, error: fetchErr } = await supabase.from('products').select('stock').eq('id', i.id).single()
@@ -118,6 +127,16 @@ export async function recordSale({ customerName, items, total, paymentMethod, am
     const newStock = Math.max(0, current.stock - i.qty)
     const { error: stockErr } = await supabase.from('products').update({ stock: newStock }).eq('id', i.id)
     if (stockErr) throw stockErr
+
+    for (const addOn of i.addOns || []) {
+      if (!addOn.productId) continue // free-text custom add-on — no stock effect
+      const { data: addOnProduct, error: aFetchErr } = await supabase.from('products').select('stock').eq('id', addOn.productId).maybeSingle()
+      if (aFetchErr) throw aFetchErr
+      if (!addOnProduct) continue
+      const addOnNewStock = Math.max(0, addOnProduct.stock - i.qty)
+      const { error: aStockErr } = await supabase.from('products').update({ stock: addOnNewStock }).eq('id', addOn.productId)
+      if (aStockErr) throw aStockErr
+    }
   }
 
   return sale
@@ -203,7 +222,7 @@ export async function clearAllSales() {
 // sales' items from analytics and restore stock on void/edit. note is the
 // per-item special-instruction text entered at Checkout (e.g. "less ice").
 export async function fetchAllSaleItemsWithCategory() {
-  const { data, error } = await supabase.from('sale_items').select('sale_id, product_id, product_name, quantity, unit_price, note, products(category, cost_price)')
+  const { data, error } = await supabase.from('sale_items').select('sale_id, product_id, product_name, quantity, unit_price, note, add_ons, products(category, cost_price)')
   if (error) throw error
   return data.map(item => ({
     saleId: item.sale_id,
@@ -212,6 +231,7 @@ export async function fetchAllSaleItemsWithCategory() {
     qty: item.quantity,
     price: Number(item.unit_price),
     note: item.note || '',
+    addOns: item.add_ons || [],
     category: item.products?.category || 'Uncategorized',
     // Cost as of now, not at time of sale — the schema doesn't snapshot
     // historical cost, so this is today's cost_price applied retroactively.
@@ -225,22 +245,28 @@ export async function fetchAllSaleItemsWithCategory() {
 export async function voidSale(saleId, voidedBy) {
   const { data: lineItems, error: itemsError } = await supabase
     .from('sale_items')
-    .select('product_id, quantity')
+    .select('product_id, quantity, add_ons')
     .eq('sale_id', saleId)
   if (itemsError) throw itemsError
 
-  for (const item of lineItems) {
-    if (!item.product_id) continue // product was deleted since the sale — nothing to restore stock to
-    const { data: product, error: fetchErr } = await supabase.from('products').select('stock').eq('id', item.product_id).maybeSingle()
+  const restoreStock = async (productId, qty) => {
+    const { data: product, error: fetchErr } = await supabase.from('products').select('stock').eq('id', productId).maybeSingle()
     if (fetchErr) throw fetchErr
-    if (!product) continue
-    const newStock = product.stock + item.quantity
-    const { error: stockErr } = await supabase.from('products').update({ stock: newStock }).eq('id', item.product_id)
+    if (!product) return // product was deleted since the sale — nothing to restore stock to
+    const newStock = product.stock + qty
+    const { error: stockErr } = await supabase.from('products').update({ stock: newStock }).eq('id', productId)
     if (stockErr) throw stockErr
     const { error: logError } = await supabase
       .from('stock_adjustments')
-      .insert({ product_id: item.product_id, previous_stock: product.stock, new_stock: newStock })
+      .insert({ product_id: productId, previous_stock: product.stock, new_stock: newStock })
     if (logError) throw logError
+  }
+
+  for (const item of lineItems) {
+    if (item.product_id) await restoreStock(item.product_id, item.quantity)
+    for (const addOn of item.add_ons || []) {
+      if (addOn.productId) await restoreStock(addOn.productId, item.quantity)
+    }
   }
 
   const { data, error } = await supabase
@@ -260,18 +286,25 @@ export async function voidSale(saleId, voidedBy) {
 export async function editSale(saleId, { items, paymentMethod, amountReceived, changeGiven, editedBy }) {
   const { data: oldItems, error: oldItemsError } = await supabase
     .from('sale_items')
-    .select('product_id, quantity')
+    .select('product_id, quantity, add_ons')
     .eq('sale_id', saleId)
   if (oldItemsError) throw oldItemsError
 
-  const oldQtyByProduct = new Map()
-  oldItems.forEach(i => {
-    if (i.product_id) oldQtyByProduct.set(i.product_id, (oldQtyByProduct.get(i.product_id) || 0) + i.quantity)
-  })
-  const newQtyByProduct = new Map()
-  items.forEach(i => {
-    if (i.productId) newQtyByProduct.set(i.productId, (newQtyByProduct.get(i.productId) || 0) + i.qty)
-  })
+  // Combines each line's own product with any add-on products it used (one
+  // add-on unit per parent unit) into a single per-product quantity map, so
+  // stock deltas below account for add-ons the same way as the base item.
+  const qtyByProduct = rows => {
+    const map = new Map()
+    rows.forEach(row => {
+      if (row.productId) map.set(row.productId, (map.get(row.productId) || 0) + row.qty)
+      ;(row.addOns || []).forEach(addOn => {
+        if (addOn.productId) map.set(addOn.productId, (map.get(addOn.productId) || 0) + row.qty)
+      })
+    })
+    return map
+  }
+  const oldQtyByProduct = qtyByProduct(oldItems.map(i => ({ productId: i.product_id, qty: i.quantity, addOns: i.add_ons })))
+  const newQtyByProduct = qtyByProduct(items.map(i => ({ productId: i.productId, qty: i.qty, addOns: i.addOns })))
 
   const productIds = new Set([...oldQtyByProduct.keys(), ...newQtyByProduct.keys()])
   for (const productId of productIds) {
@@ -292,7 +325,7 @@ export async function editSale(saleId, { items, paymentMethod, amountReceived, c
   const { error: deleteError } = await supabase.from('sale_items').delete().eq('sale_id', saleId)
   if (deleteError) throw deleteError
 
-  const newTotal = items.reduce((sum, i) => sum + i.price * i.qty, 0)
+  const newTotal = items.reduce((sum, i) => sum + (i.price + addOnsCost(i)) * i.qty, 0)
   if (items.length > 0) {
     const lineItems = items.map(i => ({
       sale_id: saleId,
@@ -301,6 +334,7 @@ export async function editSale(saleId, { items, paymentMethod, amountReceived, c
       quantity: i.qty,
       unit_price: i.price,
       note: i.note?.trim() || null,
+      add_ons: (i.addOns || []).map(a => ({ productId: a.productId || null, name: a.name, price: a.price || 0 })),
     }))
     const { error: insertError } = await supabase.from('sale_items').insert(lineItems)
     if (insertError) throw insertError

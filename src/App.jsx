@@ -42,6 +42,16 @@ function formatPHP(amount) {
   return `₱${value.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+// Sum of a cart/sale item's selected add-ons' prices. Add-ons are billable
+// (unlike the free-text note), so this rolls into the item's unit price
+// wherever a total is computed — cart, checkout summary, receipts.
+function addOnsCost(item) {
+  return (item.addOns || []).reduce((sum, a) => sum + (a.price || 0), 0)
+}
+function cartItemUnitPrice(item) {
+  return item.price + addOnsCost(item)
+}
+
 function isSameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
@@ -1043,7 +1053,7 @@ function ProductCardMenu({ onEdit, onDelete }) {
 
 // ─── Persistent cart sidebar (Products screen, lg+ only) ───────────────────
 function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, checkoutLabel = 'Checkout' }) {
-  const total = cart.reduce((sum, i) => sum + i.price * i.quantity, 0)
+  const total = cart.reduce((sum, i) => sum + cartItemUnitPrice(i) * i.quantity, 0)
 
   return (
     <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_12px_rgba(44,36,22,0.06)] sticky top-4 flex flex-col max-h-[calc(100vh-2rem)]">
@@ -1057,7 +1067,10 @@ function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, checkoutLabel = 
             <ProductImageBox image={item.image} imageSize={item.imageSize} alt={item.name} className="w-10 h-10 rounded-lg shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
-              <p className="text-xs text-[#a8977e]">{formatPHP(item.price)} each</p>
+              <p className="text-xs text-[#a8977e]">{formatPHP(cartItemUnitPrice(item))} each</p>
+              {item.addOns && item.addOns.length > 0 && (
+                <p className="text-[10px] text-[#a8977e] truncate">+ {item.addOns.map(a => a.name).join(', ')}</p>
+              )}
               <div className="flex items-center gap-2 mt-1.5">
                 <button
                   onClick={() => onUpdateQty(item.id, -1)}
@@ -1075,7 +1088,7 @@ function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, checkoutLabel = 
               </div>
             </div>
             <div className="flex flex-col items-end gap-1.5 shrink-0">
-              <span className="text-sm font-semibold text-[#2c2416]">{formatPHP(item.price * item.quantity)}</span>
+              <span className="text-sm font-semibold text-[#2c2416]">{formatPHP(cartItemUnitPrice(item) * item.quantity)}</span>
               <button
                 onClick={() => onRemove(item.id)}
                 className="text-[#c4ae88] hover:text-[#b85c42] transition-colors"
@@ -1342,10 +1355,10 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
       {items.map((item, i) => (
         <div key={i} className="mb-1">
           <div className="flex justify-between gap-2">
-            <span className="flex-1 truncate">{item.name}</span>
-            <span className="shrink-0">{formatPHP(item.price * item.qty)}</span>
+            <span className="flex-1 truncate">{item.name}{item.addOns?.length > 0 && ` + ${item.addOns.map(a => a.name).join(', ')}`}</span>
+            <span className="shrink-0">{formatPHP(cartItemUnitPrice(item) * item.qty)}</span>
           </div>
-          <p className="text-[10px]">{item.qty} x {formatPHP(item.price)}</p>
+          <p className="text-[10px]">{item.qty} x {formatPHP(cartItemUnitPrice(item))}</p>
         </div>
       ))}
       <div className="border-t border-dashed border-black my-1.5" />
@@ -1380,8 +1393,77 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
   )
 }
 
+// ─── Add-ons picker (Checkout cart rows) — toggle existing Add-on products
+// on/off, or add a free-text custom one (no price/stock effect). ───────────
+function AddOnPicker({ available, selected, onToggle, onAddCustom, onClose }) {
+  const [customText, setCustomText] = useState('')
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const handleClickOutside = e => {
+      if (ref.current && !ref.current.contains(e.target)) onClose()
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [onClose])
+
+  const selectedProductIds = new Set(selected.filter(a => a.productId).map(a => a.productId))
+  const submitCustom = () => {
+    if (customText.trim()) {
+      onAddCustom(customText.trim())
+      setCustomText('')
+    }
+  }
+
+  return (
+    <div ref={ref} className="absolute z-30 mt-1 w-72 bg-white rounded-xl border border-[#f0e8d8] shadow-lg p-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-2">Add-ons</p>
+      {available.length === 0 ? (
+        <p className="text-xs text-[#a8977e] mb-2">No add-on products yet</p>
+      ) : (
+        <div className="flex flex-wrap gap-1.5 mb-2 max-h-32 overflow-y-auto">
+          {available.map(p => {
+            const isSelected = selectedProductIds.has(p.id)
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => onToggle(p)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
+                  isSelected
+                    ? 'bg-[#2c2416] text-[#ddcca6] border-[#2c2416]'
+                    : 'bg-white border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'
+                }`}
+              >
+                {p.name}{p.price > 0 ? ` (+${formatPHP(p.price)})` : ''}
+              </button>
+            )
+          })}
+        </div>
+      )}
+      <div className="flex gap-1.5">
+        <input
+          type="text"
+          placeholder="Custom add-on..."
+          value={customText}
+          onChange={e => setCustomText(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submitCustom() } }}
+          className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-[#e8ddc8] placeholder-[#c4ae88] focus:outline-none focus:border-[#ddcca6]"
+        />
+        <button
+          type="button"
+          onClick={submitCustom}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#fff9ea] border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Checkout Screen ──────────────────────────────────────────────────────────
-function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCharge, businessName, onNavigate }) {
+function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAddOns, onClearCart, onCharge, businessName, onNavigate }) {
   const [customerName, setCustomerName] = useState('')
   const [orderType, setOrderType] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('card')
@@ -1392,8 +1474,27 @@ function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCh
   const [completedSale, setCompletedSale] = useState(null)
   const [printingThermal, setPrintingThermal] = useState(false)
   const [thermalPrintError, setThermalPrintError] = useState('')
+  const [addOnPickerFor, setAddOnPickerFor] = useState(null)
 
-  const subtotal = cart.reduce((sum, i) => sum + i.price * i.quantity, 0)
+  const addOnCatalog = items.filter(p => p.category === 'Drink Add-ons' || p.category === 'Food Add-ons')
+
+  const handleToggleAddOn = (itemId, product) => {
+    const item = cart.find(i => i.id === itemId)
+    const current = item?.addOns || []
+    const exists = current.some(a => a.productId === product.id)
+    const next = exists ? current.filter(a => a.productId !== product.id) : [...current, { productId: product.id, name: product.name, price: product.price }]
+    onUpdateAddOns(itemId, next)
+  }
+  const handleAddCustomAddOn = (itemId, name) => {
+    const item = cart.find(i => i.id === itemId)
+    onUpdateAddOns(itemId, [...(item?.addOns || []), { name, price: 0 }])
+  }
+  const handleRemoveAddOn = (itemId, index) => {
+    const item = cart.find(i => i.id === itemId)
+    onUpdateAddOns(itemId, (item?.addOns || []).filter((_, i) => i !== index))
+  }
+
+  const subtotal = cart.reduce((sum, i) => sum + cartItemUnitPrice(i) * i.quantity, 0)
   const total = subtotal
 
   const amountReceivedNum = parseFloat(amountReceived) || 0
@@ -1408,7 +1509,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCh
     try {
       const sale = await onCharge({
         customerName: resolvedCustomerName,
-        items: cart.map(i => ({ id: i.id, name: i.name, qty: i.quantity, price: i.price, category: i.category, note: i.note?.trim() || undefined })),
+        items: cart.map(i => ({ id: i.id, name: i.name, qty: i.quantity, price: i.price, category: i.category, note: i.note?.trim() || undefined, addOns: i.addOns })),
         total,
         paymentMethod,
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
@@ -1419,7 +1520,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCh
         id: sale?.id,
         createdAt: sale?.created_at || new Date().toISOString(),
         customerName: resolvedCustomerName,
-        items: cart.map(i => ({ name: i.name, qty: i.quantity, price: i.price, category: i.category, note: i.note?.trim() || undefined })),
+        items: cart.map(i => ({ name: i.name, qty: i.quantity, price: i.price, category: i.category, note: i.note?.trim() || undefined, addOns: i.addOns })),
         subtotal,
         total,
         paymentMethod,
@@ -1556,9 +1657,9 @@ function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCh
                   <div className="w-10 h-10 rounded-xl bg-[#fff9ea] flex items-center justify-center text-xl shrink-0 overflow-hidden">
                     {item.image ? <img src={item.image} alt="" className="w-full h-full object-cover" /> : '🍽️'}
                   </div>
-                  <div className="flex-1 min-w-0">
+                  <div className="relative flex-1 min-w-0">
                     <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
-                    <p className="text-xs text-[#a8977e] mb-1.5">{formatPHP(item.price)} each</p>
+                    <p className="text-xs text-[#a8977e] mb-1.5">{formatPHP(cartItemUnitPrice(item))} each</p>
                     <input
                       type="text"
                       placeholder="Add note (e.g. less ice, no whip)"
@@ -1566,6 +1667,34 @@ function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCh
                       onChange={e => onUpdateNote(item.id, e.target.value)}
                       className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-[#e8ddc8] text-[#2c2416] placeholder-[#c4ae88] focus:outline-none focus:border-[#ddcca6] focus:ring-1 focus:ring-[#ddcca6]/20 transition-all"
                     />
+                    {item.addOns && item.addOns.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {item.addOns.map((ao, i) => (
+                          <span key={i} className="inline-flex items-center gap-1 text-[10px] bg-[#fff9ea] border border-[#e8ddc8] text-[#7a6a50] px-2 py-0.5 rounded-full">
+                            + {ao.name}{ao.price > 0 ? ` (${formatPHP(ao.price)})` : ''}
+                            <button type="button" onClick={() => handleRemoveAddOn(item.id, i)} className="text-[#c4ae88] hover:text-[#b85c42]">
+                              <IconX />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setAddOnPickerFor(addOnPickerFor === item.id ? null : item.id)}
+                      className="text-[10px] text-[#a8977e] hover:text-[#2c2416] underline mt-1.5"
+                    >
+                      + Add-ons
+                    </button>
+                    {addOnPickerFor === item.id && (
+                      <AddOnPicker
+                        available={addOnCatalog}
+                        selected={item.addOns || []}
+                        onToggle={product => handleToggleAddOn(item.id, product)}
+                        onAddCustom={name => handleAddCustomAddOn(item.id, name)}
+                        onClose={() => setAddOnPickerFor(null)}
+                      />
+                    )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
@@ -1582,7 +1711,7 @@ function Checkout({ cart, onUpdateQty, onRemove, onUpdateNote, onClearCart, onCh
                       <IconPlus />
                     </button>
                   </div>
-                  <span className="w-20 text-right text-sm font-semibold text-[#2c2416] shrink-0">{formatPHP(item.price * item.quantity)}</span>
+                  <span className="w-20 text-right text-sm font-semibold text-[#2c2416] shrink-0">{formatPHP(cartItemUnitPrice(item) * item.quantity)}</span>
                   <button
                     onClick={() => onRemove(item.id)}
                     className="text-[#c4ae88] hover:text-[#b85c42] transition-colors ml-1 shrink-0"
@@ -2469,7 +2598,7 @@ function EditTransactionModal({ sale, items: lineItems, onClose, onSave }) {
   const [error, setError] = useState('')
 
   const activeItems = editItems.filter(i => i.qty > 0)
-  const total = activeItems.reduce((sum, i) => sum + i.price * i.qty, 0)
+  const total = activeItems.reduce((sum, i) => sum + cartItemUnitPrice(i) * i.qty, 0)
   const amountReceivedNum = parseFloat(amountReceived) || 0
   const change = amountReceivedNum - total
   const cashInsufficient = paymentMethod === 'cash' && (amountReceived === '' || amountReceivedNum < total)
@@ -2494,7 +2623,7 @@ function EditTransactionModal({ sale, items: lineItems, onClose, onSave }) {
     setError('')
     try {
       await onSave({
-        items: activeItems.map(i => ({ productId: i.productId, name: i.name, qty: i.qty, price: i.price, note: i.note })),
+        items: activeItems.map(i => ({ productId: i.productId, name: i.name, qty: i.qty, price: i.price, note: i.note, addOns: i.addOns })),
         paymentMethod,
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : null,
         changeGiven: paymentMethod === 'cash' ? change : null,
@@ -2513,7 +2642,10 @@ function EditTransactionModal({ sale, items: lineItems, onClose, onSave }) {
             <div key={idx} className={`flex items-center gap-3 px-3.5 py-3 ${item.qty === 0 ? 'opacity-40' : ''}`}>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-[#2c2416] truncate">{item.name}</p>
-                <p className="text-xs text-[#a8977e]">{formatPHP(item.price)} each</p>
+                <p className="text-xs text-[#a8977e]">{formatPHP(cartItemUnitPrice(item))} each</p>
+                {item.addOns?.length > 0 && (
+                  <p className="text-[10px] text-[#a8977e] truncate">+ {item.addOns.map(a => a.name).join(', ')}</p>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <button
@@ -2532,7 +2664,7 @@ function EditTransactionModal({ sale, items: lineItems, onClose, onSave }) {
                   <IconPlus />
                 </button>
               </div>
-              <span className="w-20 text-right text-sm font-semibold text-[#2c2416] shrink-0">{formatPHP(item.price * item.qty)}</span>
+              <span className="w-20 text-right text-sm font-semibold text-[#2c2416] shrink-0">{formatPHP(cartItemUnitPrice(item) * item.qty)}</span>
               <button
                 type="button"
                 onClick={() => removeItem(idx)}
@@ -3601,6 +3733,7 @@ export default function App() {
   const removeFromCart = id => setCart(prev => prev.filter(i => i.id !== id))
   const clearCart = () => setCart([])
   const updateCartItemNote = (id, note) => setCart(prev => prev.map(i => i.id === id ? { ...i, note } : i))
+  const updateCartItemAddOns = (id, addOns) => setCart(prev => prev.map(i => i.id === id ? { ...i, addOns } : i))
 
   // Separate cart so a staff order in progress never mixes with a regular
   // customer order sitting in `cart`.
@@ -3647,7 +3780,7 @@ export default function App() {
     switch (screen) {
       case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} />
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
-      case 'checkout': return <Checkout cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
+      case 'checkout': return <Checkout items={items} cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onUpdateAddOns={updateCartItemAddOns} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
       case 'staffOrder': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToStaffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} cart={staffCart} onNavigate={setScreen} checkoutScreen="staffOrderCheckout" isStaffMode />
       case 'staffOrderCheckout': return <StaffOrderCheckout cart={staffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} onClearCart={clearStaffCart} onCharge={chargeStaffOrder} businessName={settings.businessName} onNavigate={setScreen} />
       case 'staffOrdersLog': return <StaffOrdersLog businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} />
