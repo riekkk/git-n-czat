@@ -1106,6 +1106,7 @@ function CartSidebar({ cart, onUpdateQty, onRemove, onCheckout, checkoutLabel = 
 // ─── Products Screen ─────────────────────────────────────────────────────────
 function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateItem, onDeleteItem, onAddToCart, onUpdateQty, onRemove, cart, onNavigate, checkoutScreen = 'checkout', isStaffMode = false }) {
   const [search, setSearch] = useState('')
+  const [searchFocused, setSearchFocused] = useState(false)
   const [category, setCategory] = useState('All')
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingProduct, setEditingProduct] = useState(null)
@@ -1194,19 +1195,25 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
         </div>
       ) : (
         <>
-          {/* Search + filters */}
+          {/* Search + filters — the search box grows on focus (or while it
+              has text) so a typed query is never cramped against the
+              category pills; the pills stay reachable via horizontal
+              scroll (overflow-x-auto) when squeezed. Only applies at sm+ —
+              below that the two already stack vertically at full width. */}
           <div className="flex flex-col sm:flex-row gap-3 mb-6">
-            <div className="relative flex-1">
+            <div className={`relative shrink-0 transition-[width] duration-200 ${searchFocused || search ? 'sm:w-96' : 'sm:w-56'}`}>
               <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#a8977e]"><IconSearch /></span>
               <input
                 type="text"
                 placeholder="Search products..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
                 className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[#e8ddc8] bg-white text-sm text-[#2c2416] placeholder-[#c4ae88] focus:outline-none focus:border-[#ddcca6] focus:ring-2 focus:ring-[#ddcca6]/20 transition-all"
               />
             </div>
-            <div className="flex gap-2 overflow-x-auto pb-1">
+            <div className="flex gap-2 overflow-x-auto pb-1 sm:flex-1 sm:min-w-0">
               {categories.map(cat => (
                 <button
                   key={cat}
