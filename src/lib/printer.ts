@@ -13,11 +13,19 @@ const RECEIPT_WIDTH = 48
 
 const ESC = '\x1B'
 const GS = '\x1D'
+const FS = '\x1C'
 const INIT = `${ESC}@`
 const FULL_CUT = `${GS}V\x00`
 // Pulses drawer-kick pin 2 (ESC p 0 25 250) — opens a cash drawer wired
 // into the printer's RJ11/RJ12 drawer-kick port.
 const KICK_DRAWER = `${ESC}p\x00\x19\xFA`
+
+// NV image slot the Dimp'z Cafe logo is stored in on the XP-T80Q itself
+// (uploaded once via scripts/upload-logo-to-printer.mjs, FS q). Printing it
+// only needs this 4-byte reference (FS p n m) instead of resending the
+// bitmap on every job. Customer Copy only — see buildReceiptText.
+const LOGO_NV_IMAGE_ID = 1
+const PRINT_LOGO = `${FS}p${String.fromCharCode(LOGO_NV_IMAGE_ID)}\x00`
 
 export interface ReceiptAddOn {
   name: string
@@ -153,6 +161,9 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   }
   if (order.isStaffOrder) {
     parts.push(staffOrderBanner(width))
+  }
+  if (copyLabel === 'CUSTOMER COPY') {
+    parts.push(PRINT_LOGO)
   }
   if (copyLabel) {
     parts.push(centerLine(copyLabel, width))
