@@ -2764,6 +2764,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
   const [editingSale, setEditingSale] = useState(null)
   const [reprintTarget, setReprintTarget] = useState(null)
   const [orderTypeFilter, setOrderTypeFilter] = useState('all')
+  const [expandedCategory, setExpandedCategory] = useState(null)
   const now = new Date()
 
   const load = () => {
@@ -2801,9 +2802,13 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
 
   // Voided sales are kept for audit and staff orders are kept for their own
   // log, but neither counts toward revenue/analytics below — only "active"
-  // (non-voided, non-staff) sales/items feed those.
-  const excludedSaleIds = new Set(sales.filter(s => s.status === 'voided' || s.is_staff_order).map(s => s.id))
-  const activeSales = sales.filter(s => s.status !== 'voided' && !s.is_staff_order)
+  // (non-voided, non-staff) sales/items feed those. The Dine In/Take Out
+  // toggle applies here too, so every stat on this page (revenue, COGS, Top
+  // Products, Category Breakdown) reflects the same filter as the
+  // transaction list below it, not just the list.
+  const orderTypeMatches = s => orderTypeFilter === 'all' || s.order_type === orderTypeFilter
+  const excludedSaleIds = new Set(sales.filter(s => s.status === 'voided' || s.is_staff_order || !orderTypeMatches(s)).map(s => s.id))
+  const activeSales = sales.filter(s => s.status !== 'voided' && !s.is_staff_order && orderTypeMatches(s))
   const activeSaleItems = saleItems.filter(i => !excludedSaleIds.has(i.saleId))
 
   const itemsBySale = new Map()
@@ -2891,6 +2896,22 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
   const categoryBreakdown = Array.from(categoryRevenue.entries())
     .map(([cat, revenue]) => ({ cat, revenue, pct: totalCategoryRevenue ? Math.round((revenue / totalCategoryRevenue) * 100) : 0 }))
     .sort((a, b) => b.revenue - a.revenue)
+
+  // Top items within each category (by qty sold) — feeds the click-through
+  // detail under Category Breakdown. Same activeSaleItems as the % breakdown
+  // above, so it's subject to the same voided/staff-order/order-type filters.
+  const itemsByCategory = new Map()
+  activeSaleItems.forEach(item => {
+    const cat = item.category || 'Uncategorized'
+    if (!itemsByCategory.has(cat)) itemsByCategory.set(cat, new Map())
+    const catItems = itemsByCategory.get(cat)
+    const entry = catItems.get(item.name) || { name: item.name, qty: 0 }
+    entry.qty += item.qty
+    catItems.set(item.name, entry)
+  })
+  const topItemsInExpandedCategory = expandedCategory
+    ? Array.from((itemsByCategory.get(expandedCategory) || new Map()).values()).sort((a, b) => b.qty - a.qty).slice(0, 5)
+    : []
 
   // All-time transaction stats + COGS/profit — the new "Transaction Reports" header section
   const totalTransactionCount = activeSales.length
@@ -3106,19 +3127,47 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            {categoryBreakdown.map((c, i) => (
-              <div key={c.cat} className="text-center p-4 rounded-xl bg-[#fffcf5] border border-[#f0e8d8]">
-                <div className="relative w-16 h-16 mx-auto mb-3">
-                  <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
-                    <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f0e8d8" strokeWidth="3.8" />
-                    <circle cx="18" cy="18" r="15.9" fill="none" stroke={CATEGORY_COLORS[i % CATEGORY_COLORS.length]} strokeWidth="3.8"
-                      strokeDasharray={`${c.pct} ${100 - c.pct}`} strokeLinecap="round" />
-                  </svg>
-                  <span className="absolute inset-0 flex items-center justify-center text-xs font-bold text-[#2c2416]">{c.pct}%</span>
-                </div>
-                <p className="text-xs font-medium text-[#7a6a50]">{c.cat}</p>
-              </div>
-            ))}
+            {categoryBreakdown.map((c, i) => {
+              const isExpanded = expandedCategory === c.cat
+              return (
+                <button
+                  key={c.cat}
+                  type="button"
+                  onClick={() => setExpandedCategory(isExpanded ? null : c.cat)}
+                  className={`text-center p-4 rounded-xl bg-[#fffcf5] border transition-colors ${isExpanded ? 'border-[#2c2416]' : 'border-[#f0e8d8] hover:border-[#c9b98a]'}`}
+                >
+                  <div className="relative w-16 h-16 mx-auto mb-3">
+                    <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                      <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f0e8d8" strokeWidth="3.8" />
+                      <circle cx="18" cy="18" r="15.9" fill="none" stroke={CATEGORY_COLORS[i % CATEGORY_COLORS.length]} strokeWidth="3.8"
+                        strokeDasharray={`${c.pct} ${100 - c.pct}`} strokeLinecap="round" />
+                    </svg>
+                    <span className="absolute inset-0 flex items-center justify-center text-xs font-bold text-[#2c2416]">{c.pct}%</span>
+                  </div>
+                  <p className="text-xs font-medium text-[#7a6a50]">{c.cat}</p>
+                </button>
+              )
+            })}
+          </div>
+        )}
+        {expandedCategory && (
+          <div className="mt-5 pt-5 border-t border-[#f0e8d8]">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-[#2c2416]">Top items in {expandedCategory}</h3>
+              <button type="button" onClick={() => setExpandedCategory(null)} className="text-xs text-[#a8977e] hover:text-[#2c2416]">Close</button>
+            </div>
+            {topItemsInExpandedCategory.length === 0 ? (
+              <p className="text-sm text-[#a8977e]">No items sold in this category for the current filter.</p>
+            ) : (
+              <ol className="space-y-2">
+                {topItemsInExpandedCategory.map((item, idx) => (
+                  <li key={item.name} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-[#2c2416] truncate"><span className="text-[#a8977e] mr-2">{idx + 1}.</span>{item.name}</span>
+                    <span className="text-[#7a6a50] font-medium shrink-0">{item.qty} sold</span>
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         )}
       </div>
