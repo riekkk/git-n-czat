@@ -35,7 +35,7 @@ const ROOT = path.resolve(__dirname, '..')
 
 const LOGO_PATH = path.join(ROOT, 'src/imports/dc logo.png')
 const OUT_PATH = path.join(ROOT, 'src/lib/receiptLogo.ts')
-const CONTENT_WIDTH_DOTS = 320 // byte-aligned (40 bytes); well within any 80mm print head
+const CONTENT_WIDTH_DOTS = 208 // byte-aligned (26 bytes); ~65% of the original 320-dot size, which printed too large
 const V_PAD_DOTS = 16 // blank rows above/below the art
 const THRESHOLD = 165 // grayscale cutoff below which a pixel becomes a printed (black) dot
 const MAX_CHUNK_HEIGHT_DOTS = 200 // conservative margin under the ~255-dot ceiling several clone firmwares impose per GS v 0 call
