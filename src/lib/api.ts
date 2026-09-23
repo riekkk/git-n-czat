@@ -17,13 +17,19 @@ function mapProductRow(row) {
     name: row.name,
     price: Number(row.price),
     category: row.category,
-    stock: row.stock,
+    // numeric columns come back from PostgREST as strings (arbitrary
+    // precision, no silent float rounding) — Number() them like price/cost
+    // above, or comparisons like stock === 0 and arithmetic elsewhere break.
+    stock: Number(row.stock),
     image: row.emoji || '',
     imageSize: row.image_size ?? 100,
     costPrice: Number(row.cost_price) || 0,
     description: row.description || '',
     kind: row.kind || 'product',
     unit: row.unit || '',
+    // Ingredients only: how many servings one stock unit yields (e.g. a 1L
+    // bottle of Milk yielding 20 lattes' worth) — see product_recipes.
+    yieldPerUnit: Number(row.yield_per_unit) || 1,
   }
 }
 
@@ -31,6 +37,29 @@ export async function fetchProducts() {
   const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: true })
   if (error) throw error
   return data.map(mapProductRow)
+}
+
+// Replaces a product's whole recipe (delete-then-insert, same pattern as
+// editSale's line items) — called after the product itself is saved, since
+// a fresh insert doesn't have an id to attach recipe rows to until then.
+// `recipe` is [{ ingredientId, servings }]; undefined leaves recipes alone
+// (e.g. saving an ingredient, which never has its own recipe).
+async function saveProductRecipe(productId, recipe) {
+  if (recipe === undefined) return
+  const { error: deleteError } = await supabase.from('product_recipes').delete().eq('product_id', productId)
+  if (deleteError) throw deleteError
+  const rows = recipe
+    .filter(r => r.ingredientId && r.servings > 0)
+    .map(r => ({ product_id: productId, ingredient_id: r.ingredientId, servings: r.servings }))
+  if (rows.length === 0) return
+  const { error: insertError } = await supabase.from('product_recipes').insert(rows)
+  if (insertError) throw insertError
+}
+
+export async function fetchProductRecipe(productId) {
+  const { data, error } = await supabase.from('product_recipes').select('ingredient_id, servings').eq('product_id', productId)
+  if (error) throw error
+  return data.map(r => ({ ingredientId: r.ingredient_id, servings: Number(r.servings) }))
 }
 
 export async function insertProduct(item) {
@@ -45,9 +74,11 @@ export async function insertProduct(item) {
     description: item.description || '',
     kind: item.kind || 'product',
     unit: item.unit || null,
+    yield_per_unit: item.yieldPerUnit || 1,
   }
   const { data, error } = await supabase.from('products').insert(payload).select().single()
   if (error) throw error
+  await saveProductRecipe(data.id, item.recipe)
   return mapProductRow(data)
 }
 
@@ -62,9 +93,11 @@ export async function updateProduct(id, item) {
     cost_price: item.costPrice || 0,
     description: item.description || '',
     unit: item.unit || null,
+    yield_per_unit: item.yieldPerUnit || 1,
   }
   const { data, error } = await supabase.from('products').update(payload).eq('id', id).select().single()
   if (error) throw error
+  await saveProductRecipe(id, item.recipe)
   return mapProductRow(data)
 }
 
@@ -78,6 +111,10 @@ export async function deleteProduct(id) {
   }
 }
 
+// Manual stock correction (Inventory screen quick-edit) — an explicit
+// override of that one item's own count, not a sale/void/edit event, so it
+// deliberately does NOT cascade through product_recipes (setting Spanish
+// Latte's stock to 5 shouldn't also touch Milk).
 export async function updateProductStock(id, previousStock, newStock) {
   const { error: updateError } = await supabase.from('products').update({ stock: newStock }).eq('id', id)
   if (updateError) throw updateError
@@ -86,6 +123,37 @@ export async function updateProductStock(id, previousStock, newStock) {
     .from('stock_adjustments')
     .insert({ product_id: id, previous_stock: previousStock, new_stock: newStock })
   if (logError) throw logError
+}
+
+// Cascades a product's own stock change through its recipe (product_recipes)
+// into ingredient stock. `productQtyDelta` uses the same sign as the
+// caller's own product-stock change (negative = sold/consumed, positive =
+// restored) — passed straight through, so ingredient stock moves the same
+// direction. No-ops for a product with no recipe (e.g. an ingredient, or a
+// product nobody's built a recipe for yet).
+async function applyRecipeStockDelta(productId, productQtyDelta) {
+  if (!productQtyDelta) return
+  const { data: recipeRows, error: recipeErr } = await supabase
+    .from('product_recipes')
+    .select('ingredient_id, servings')
+    .eq('product_id', productId)
+  if (recipeErr) throw recipeErr
+  if (!recipeRows || recipeRows.length === 0) return
+
+  for (const row of recipeRows) {
+    const { data: ingredient, error: fetchErr } = await supabase
+      .from('products')
+      .select('stock, yield_per_unit')
+      .eq('id', row.ingredient_id)
+      .maybeSingle()
+    if (fetchErr) throw fetchErr
+    if (!ingredient) continue // ingredient was deleted since the recipe was set
+    const yieldPerUnit = Number(ingredient.yield_per_unit) || 1
+    const stockDelta = (Number(row.servings) * productQtyDelta) / yieldPerUnit
+    const newIngredientStock = Math.max(0, Number(ingredient.stock) + stockDelta)
+    const { error: stockErr } = await supabase.from('products').update({ stock: newIngredientStock }).eq('id', row.ingredient_id)
+    if (stockErr) throw stockErr
+  }
 }
 
 export async function recordSale({ customerName, items, total, paymentMethod, amountReceived, changeGiven, orderType, isStaffOrder }) {
@@ -121,21 +189,26 @@ export async function recordSale({ customerName, items, total, paymentMethod, am
   // "Extra Shot" add-on uses 3 shots). Fetch-then-update rather than a blind
   // decrement so we never write a stale value; not fully atomic under
   // concurrent checkouts, but this app runs from a single POS terminal.
+  // Each deduction also cascades through that product's recipe (if any)
+  // into ingredient stock — see applyRecipeStockDelta.
   for (const i of items) {
     const { data: current, error: fetchErr } = await supabase.from('products').select('stock').eq('id', i.id).single()
     if (fetchErr) throw fetchErr
-    const newStock = Math.max(0, current.stock - i.qty)
+    // numeric columns come back as strings — Number() before arithmetic.
+    const newStock = Math.max(0, Number(current.stock) - i.qty)
     const { error: stockErr } = await supabase.from('products').update({ stock: newStock }).eq('id', i.id)
     if (stockErr) throw stockErr
+    await applyRecipeStockDelta(i.id, -i.qty)
 
     for (const addOn of i.addOns || []) {
       if (!addOn.productId) continue // free-text custom add-on — no stock effect
       const { data: addOnProduct, error: aFetchErr } = await supabase.from('products').select('stock').eq('id', addOn.productId).maybeSingle()
       if (aFetchErr) throw aFetchErr
       if (!addOnProduct) continue
-      const addOnNewStock = Math.max(0, addOnProduct.stock - i.qty)
+      const addOnNewStock = Math.max(0, Number(addOnProduct.stock) - i.qty)
       const { error: aStockErr } = await supabase.from('products').update({ stock: addOnNewStock }).eq('id', addOn.productId)
       if (aStockErr) throw aStockErr
+      await applyRecipeStockDelta(addOn.productId, -i.qty)
     }
   }
 
@@ -278,13 +351,17 @@ export async function voidSale(saleId, voidedBy) {
     const { data: product, error: fetchErr } = await supabase.from('products').select('stock').eq('id', productId).maybeSingle()
     if (fetchErr) throw fetchErr
     if (!product) return // product was deleted since the sale — nothing to restore stock to
-    const newStock = product.stock + qty
+    // numeric columns come back as strings — Number() before arithmetic, or
+    // "12" + 3 silently string-concatenates into "123" instead of adding.
+    const previousStock = Number(product.stock)
+    const newStock = previousStock + qty
     const { error: stockErr } = await supabase.from('products').update({ stock: newStock }).eq('id', productId)
     if (stockErr) throw stockErr
     const { error: logError } = await supabase
       .from('stock_adjustments')
-      .insert({ product_id: productId, previous_stock: product.stock, new_stock: newStock })
+      .insert({ product_id: productId, previous_stock: previousStock, new_stock: newStock })
     if (logError) throw logError
+    await applyRecipeStockDelta(productId, qty)
   }
 
   for (const item of lineItems) {
@@ -338,13 +415,16 @@ export async function editSale(saleId, { items, paymentMethod, amountReceived, c
     const { data: product, error: fetchErr } = await supabase.from('products').select('stock').eq('id', productId).maybeSingle()
     if (fetchErr) throw fetchErr
     if (!product) continue // product was deleted since the sale
-    const newStock = Math.max(0, product.stock + delta)
+    // numeric columns come back as strings — Number() before arithmetic.
+    const previousStock = Number(product.stock)
+    const newStock = Math.max(0, previousStock + delta)
     const { error: stockErr } = await supabase.from('products').update({ stock: newStock }).eq('id', productId)
     if (stockErr) throw stockErr
     const { error: logError } = await supabase
       .from('stock_adjustments')
-      .insert({ product_id: productId, previous_stock: product.stock, new_stock: newStock })
+      .insert({ product_id: productId, previous_stock: previousStock, new_stock: newStock })
     if (logError) throw logError
+    await applyRecipeStockDelta(productId, delta)
   }
 
   const { error: deleteError } = await supabase.from('sale_items').delete().eq('sale_id', saleId)

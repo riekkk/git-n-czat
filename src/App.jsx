@@ -549,7 +549,7 @@ function ProductImageBox({ image, imageSize = 100, alt, className = '' }) {
 }
 
 // ─── Add/Edit Product modal (Products screen) ──────────────────────────────
-function AddProductModal({ onClose, onSubmit, product }) {
+function AddProductModal({ onClose, onSubmit, product, ingredients = [] }) {
   const isEdit = Boolean(product)
   const [name, setName] = useState(product?.name || '')
   const [price, setPrice] = useState(product ? String(product.price) : '')
@@ -562,6 +562,31 @@ function AddProductModal({ onClose, onSubmit, product }) {
   const [description, setDescription] = useState(product?.description || '')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
+
+  // Recipe: which ingredients (and how many servings of each) one unit of
+  // this product consumes — feeds automatic ingredient stock deduction at
+  // checkout (see applyRecipeStockDelta in api.ts). Loaded lazily on edit
+  // since the product list itself doesn't carry recipe rows.
+  const [recipe, setRecipe] = useState([])
+  const [loadingRecipe, setLoadingRecipe] = useState(isEdit)
+
+  useEffect(() => {
+    if (!isEdit) return
+    let cancelled = false
+    api.fetchProductRecipe(product.id)
+      .then(rows => { if (!cancelled) setRecipe(rows.length ? rows : []) })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoadingRecipe(false) })
+    return () => { cancelled = true }
+  }, [isEdit, product?.id])
+
+  const addRecipeRow = () => setRecipe(r => [...r, { ingredientId: '', servings: 1 }])
+  const updateRecipeRow = (idx, patch) => setRecipe(r => r.map((row, i) => (i === idx ? { ...row, ...patch } : row)))
+  const removeRecipeRow = idx => setRecipe(r => r.filter((_, i) => i !== idx))
+  const ingredientOptionsFor = idx => {
+    const usedElsewhere = new Set(recipe.filter((_, i) => i !== idx).map(row => row.ingredientId))
+    return ingredients.filter(ing => !usedElsewhere.has(ing.id))
+  }
 
   const handleImageChange = async e => {
     const file = e.target.files?.[0]
@@ -591,6 +616,7 @@ function AddProductModal({ onClose, onSubmit, product }) {
         imageSize,
         description: description.trim(),
         kind: 'product',
+        recipe: recipe.filter(r => r.ingredientId && r.servings > 0),
       })
     } catch (err) {
       setSubmitError(err.message || `Could not ${isEdit ? 'save' : 'add'} product — try again`)
@@ -680,6 +706,51 @@ function AddProductModal({ onClose, onSubmit, product }) {
           <label className={labelClass}>Description</label>
           <textarea className={inputClass} rows={2} value={description} onChange={e => setDescription(e.target.value)} placeholder="Short description" />
         </div>
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className={labelClass}>Recipe (Ingredients Used)</label>
+            {ingredients.length > 0 && (
+              <button type="button" onClick={addRecipeRow} className="text-xs text-[#7a6a50] hover:text-[#2c2416] font-medium">+ Add Ingredient</button>
+            )}
+          </div>
+          {ingredients.length === 0 ? (
+            <p className="text-xs text-[#a8977e]">No raw ingredients in Inventory yet — add some there first to build a recipe.</p>
+          ) : loadingRecipe ? (
+            <p className="text-xs text-[#a8977e]">Loading recipe…</p>
+          ) : recipe.length === 0 ? (
+            <p className="text-xs text-[#a8977e]">Not tracked against any ingredient yet — this product won't deduct ingredient stock when sold.</p>
+          ) : (
+            <div className="space-y-2">
+              {recipe.map((row, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <select
+                    className={inputClass}
+                    value={row.ingredientId}
+                    onChange={e => updateRecipeRow(idx, { ingredientId: e.target.value })}
+                  >
+                    <option value="">Select ingredient…</option>
+                    {ingredientOptionsFor(idx).map(ing => (
+                      <option key={ing.id} value={ing.id}>{ing.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className={`${inputClass} w-28 shrink-0`}
+                    value={row.servings}
+                    onChange={e => updateRecipeRow(idx, { servings: parseFloat(e.target.value) || 0 })}
+                    placeholder="Servings"
+                  />
+                  <button type="button" onClick={() => removeRecipeRow(idx)} className="text-xs text-[#b85c42] hover:text-[#a04030] shrink-0 px-1">Remove</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {ingredients.length > 0 && recipe.length === 0 && !loadingRecipe && (
+            <button type="button" onClick={addRecipeRow} className="mt-2 text-xs text-[#7a6a50] hover:text-[#2c2416] font-medium">+ Add Ingredient</button>
+          )}
+        </div>
         {submitError && <p className="text-xs text-[#b85c42]">{submitError}</p>}
         <button
           type="submit"
@@ -695,13 +766,15 @@ function AddProductModal({ onClose, onSubmit, product }) {
 }
 
 // ─── Add Product/Ingredient modal (Inventory screen) ───────────────────────
-function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product' }) {
-  const [kind, setKind] = useState(initialKind)
-  const [name, setName] = useState('')
-  const [category, setCategory] = useState('')
-  const [price, setPrice] = useState('')
-  const [unit, setUnit] = useState('')
-  const [stock, setStock] = useState('')
+function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product', item }) {
+  const isEdit = Boolean(item)
+  const [kind, setKind] = useState(item?.kind || initialKind)
+  const [name, setName] = useState(item?.name || '')
+  const [category, setCategory] = useState(item?.category || '')
+  const [price, setPrice] = useState(item?.price ? String(item.price) : '')
+  const [unit, setUnit] = useState(item?.unit || '')
+  const [yieldPerUnit, setYieldPerUnit] = useState(item?.yieldPerUnit ? String(item.yieldPerUnit) : '1')
+  const [stock, setStock] = useState(item ? String(item.stock) : '')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
 
@@ -714,11 +787,12 @@ function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product' }) {
       await onAdd({
         name: name.trim(),
         category: category.trim() || 'Uncategorized',
-        stock: parseInt(stock, 10) || 0,
+        // Stock can be fractional for ingredients (bottles, kg) — see Yield.
+        stock: parseFloat(stock) || 0,
         kind,
         ...(kind === 'product'
           ? { price: parseFloat(price) || 0, description: '' }
-          : { unit: unit.trim() || 'unit' }),
+          : { unit: unit.trim() || 'unit', yieldPerUnit: parseFloat(yieldPerUnit) || 1 }),
       })
     } catch (err) {
       setSubmitError(err.message || 'Could not save — try again')
@@ -727,27 +801,29 @@ function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product' }) {
   }
 
   return (
-    <Modal title="Add Product / Ingredient" onClose={onClose}>
+    <Modal title={isEdit ? 'Edit Ingredient' : 'Add Product / Ingredient'} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
-        <div>
-          <label className={labelClass}>Type</label>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => setKind('product')}
-              className={`py-2.5 rounded-xl text-sm font-medium transition-all ${kind === 'product' ? 'bg-[#2c2416] text-[#ddcca6]' : 'border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'}`}
-            >
-              Sellable Product
-            </button>
-            <button
-              type="button"
-              onClick={() => setKind('ingredient')}
-              className={`py-2.5 rounded-xl text-sm font-medium transition-all ${kind === 'ingredient' ? 'bg-[#2c2416] text-[#ddcca6]' : 'border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'}`}
-            >
-              Raw Ingredient
-            </button>
+        {!isEdit && (
+          <div>
+            <label className={labelClass}>Type</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setKind('product')}
+                className={`py-2.5 rounded-xl text-sm font-medium transition-all ${kind === 'product' ? 'bg-[#2c2416] text-[#ddcca6]' : 'border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'}`}
+              >
+                Sellable Product
+              </button>
+              <button
+                type="button"
+                onClick={() => setKind('ingredient')}
+                className={`py-2.5 rounded-xl text-sm font-medium transition-all ${kind === 'ingredient' ? 'bg-[#2c2416] text-[#ddcca6]' : 'border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'}`}
+              >
+                Raw Ingredient
+              </button>
+            </div>
           </div>
-        </div>
+        )}
         <div>
           <label className={labelClass}>Name</label>
           <input className={inputClass} value={name} onChange={e => setName(e.target.value)} placeholder={kind === 'product' ? 'e.g. Flat White' : 'e.g. Whole Milk'} required />
@@ -772,9 +848,16 @@ function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product' }) {
             </div>
           )}
         </div>
+        {kind === 'ingredient' && (
+          <div>
+            <label className={labelClass}>Yield (servings per unit)</label>
+            <input type="number" min="0.01" step="0.01" className={inputClass} value={yieldPerUnit} onChange={e => setYieldPerUnit(e.target.value)} placeholder="e.g. 20" />
+            <p className="text-xs text-[#a8977e] mt-1">How many servings one stock unit produces — e.g. a 1L bottle of Milk yielding 20 lattes' worth means a Yield of 20. Used to convert a recipe's servings into stock deducted at checkout.</p>
+          </div>
+        )}
         <div>
-          <label className={labelClass}>Starting Stock Quantity</label>
-          <input type="number" min="0" className={inputClass} value={stock} onChange={e => setStock(e.target.value)} placeholder="0" />
+          <label className={labelClass}>{isEdit ? 'Stock Quantity' : 'Starting Stock Quantity'}</label>
+          <input type="number" min="0" step="0.01" className={inputClass} value={stock} onChange={e => setStock(e.target.value)} placeholder="0" />
         </div>
         {submitError && <p className="text-xs text-[#b85c42]">{submitError}</p>}
         <button
@@ -783,7 +866,7 @@ function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product' }) {
           className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
         >
           {submitting && <Spinner className="w-4 h-4" />}
-          {submitting ? 'Adding…' : 'Add to Inventory'}
+          {submitting ? (isEdit ? 'Saving…' : 'Adding…') : (isEdit ? 'Save Changes' : 'Add to Inventory')}
         </button>
       </form>
     </Modal>
@@ -1142,6 +1225,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
   }
 
   const products = items.filter(i => i.kind === 'product')
+  const ingredients = items.filter(i => i.kind === 'ingredient')
   const categories = ['All', ...Array.from(new Set(products.map(p => p.category).filter(Boolean)))]
 
   const filtered = products.filter(p => {
@@ -1311,6 +1395,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
 
       {showAddModal && (
         <AddProductModal
+          ingredients={ingredients}
           onClose={() => setShowAddModal(false)}
           onSubmit={async item => { await onAddItem(item); setShowAddModal(false) }}
         />
@@ -1319,6 +1404,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
       {editingProduct && (
         <AddProductModal
           product={editingProduct}
+          ingredients={ingredients}
           onClose={() => setEditingProduct(null)}
           onSubmit={async item => { await onUpdateItem(editingProduct.id, item); setEditingProduct(null) }}
         />
@@ -2043,12 +2129,13 @@ function StaffOrderCheckout({ cart, onUpdateQty, onRemove, onClearCart, onCharge
 }
 
 // ─── Inventory Screen ─────────────────────────────────────────────────────────
-function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateStock, onDeleteItem }) {
+function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, onUpdateItem, onUpdateStock, onDeleteItem }) {
   const [tab, setTab] = useState('product')
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState(null)
   const [editVal, setEditVal] = useState('')
   const [showAddModal, setShowAddModal] = useState(false)
+  const [editingItem, setEditingItem] = useState(null)
   const [savingStock, setSavingStock] = useState(false)
   const [stockError, setStockError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(null)
@@ -2063,7 +2150,9 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
   const tabLabel = tab === 'product' ? 'Product' : 'Ingredient'
 
   const save = async id => {
-    const val = parseInt(editVal, 10)
+    // Ingredient stock can be fractional (bottles, kg) now that it's
+    // auto-deducted by recipe servings ÷ Yield.
+    const val = parseFloat(editVal)
     if (isNaN(val) || val < 0) { setEditing(null); return }
     setSavingStock(true)
     setStockError('')
@@ -2225,6 +2314,7 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
                         {editing === p.id ? (
                           <input
                             type="number"
+                            step="0.01"
                             value={editVal}
                             disabled={savingStock}
                             onChange={e => setEditVal(e.target.value)}
@@ -2252,8 +2342,16 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
                             onClick={() => { setEditing(p.id); setEditVal(String(p.stock)) }}
                             className="text-xs text-[#7a6a50] hover:text-[#2c2416] border border-[#e8ddc8] hover:border-[#ddcca6] px-3 py-1.5 rounded-lg transition-all"
                           >
-                            Edit
+                            Stock
                           </button>
+                          {p.kind === 'ingredient' && (
+                            <button
+                              onClick={() => setEditingItem(p)}
+                              className="text-xs text-[#7a6a50] hover:text-[#2c2416] border border-[#e8ddc8] hover:border-[#ddcca6] px-3 py-1.5 rounded-lg transition-all"
+                            >
+                              Details
+                            </button>
+                          )}
                           <button
                             onClick={() => { setConfirmDelete(p); setDeleteError('') }}
                             title="Remove item"
@@ -2277,6 +2375,14 @@ function Inventory({ items, itemsLoading, itemsError, onRetryItems, onAddItem, o
           initialKind={tab}
           onClose={() => setShowAddModal(false)}
           onAdd={async item => { await onAddItem(item); setShowAddModal(false) }}
+        />
+      )}
+
+      {editingItem && (
+        <AddInventoryItemModal
+          item={editingItem}
+          onClose={() => setEditingItem(null)}
+          onAdd={async item => { await onUpdateItem(editingItem.id, item); setEditingItem(null) }}
         />
       )}
 
@@ -3720,11 +3826,16 @@ export default function App() {
 
   const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType }) => {
     const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType })
-    // Reflect the stock decrement locally so Products/Inventory update without a refetch.
+    // Reflect the sold products' own stock decrement locally right away so
+    // Products/Inventory update without waiting on a round trip. A sale can
+    // also cascade into ingredient stock via each product's recipe (see
+    // applyRecipeStockDelta) — those deltas aren't known client-side, so
+    // refetch afterward to pick them up, same as void/edit do below.
     setItems(prev => prev.map(p => {
       const sold = saleItems.find(i => i.id === p.id)
       return sold ? { ...p, stock: Math.max(0, p.stock - sold.qty) } : p
     }))
+    refetchItems()
     return sale
   }
 
@@ -3736,6 +3847,7 @@ export default function App() {
       const taken = saleItems.find(i => i.id === p.id)
       return taken ? { ...p, stock: Math.max(0, p.stock - taken.qty) } : p
     }))
+    refetchItems()
     return sale
   }
 
@@ -3833,7 +3945,7 @@ export default function App() {
       case 'staffOrder': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToStaffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} cart={staffCart} onNavigate={setScreen} checkoutScreen="staffOrderCheckout" isStaffMode />
       case 'staffOrderCheckout': return <StaffOrderCheckout cart={staffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} onClearCart={clearStaffCart} onCharge={chargeStaffOrder} businessName={settings.businessName} onNavigate={setScreen} />
       case 'staffOrdersLog': return <StaffOrdersLog businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} />
-      case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
+      case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers businessName={settings.businessName} />
       case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
       case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} />
