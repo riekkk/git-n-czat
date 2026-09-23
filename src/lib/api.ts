@@ -181,15 +181,37 @@ export async function fetchRecentSales(daysBack = 7) {
   }))
 }
 
+// Supabase/PostgREST caps a single response at 1000 rows by default — an
+// unbounded .select() past that silently truncates instead of erroring, so
+// callers that need every row (not just a page of them) must paginate with
+// .range() instead. orderColumns must fully determine a unique row order
+// (a tiebreaker like id after created_at) or rows can be skipped/duplicated
+// across page boundaries.
+// A non-literal select string defeats supabase-js's column-shape type
+// inference (it falls back to an opaque stub type) — declared any[] here to
+// match this file's existing loosely-typed rows rather than fight that.
+async function fetchAllRows(table: string, selectClause: string, orderColumns: [string, { ascending: boolean }][]): Promise<any[]> {
+  const PAGE_SIZE = 1000
+  const rows: any[] = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    let query = supabase.from(table).select(selectClause).range(from, from + PAGE_SIZE - 1) as any
+    for (const [column, options] of orderColumns) query = query.order(column, options)
+    const { data, error } = await query
+    if (error) throw error
+    rows.push(...data)
+    if (data.length < PAGE_SIZE) return rows
+  }
+}
+
 // Reports: all-time sales (for monthly chart + this-month summary stats, and
 // the transaction list). Includes voided sales — callers filter those out of
 // revenue/analytics but still need them to render the list with a status.
 export async function fetchAllSales() {
-  const { data, error } = await supabase
-    .from('sales')
-    .select('id, customer_name, total, payment_method, order_type, is_staff_order, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given')
-    .order('created_at', { ascending: true })
-  if (error) throw error
+  const data = await fetchAllRows(
+    'sales',
+    'id, customer_name, total, payment_method, order_type, is_staff_order, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given',
+    [['created_at', { ascending: true }], ['id', { ascending: true }]]
+  )
   return data.map(s => ({
     ...s,
     total: Number(s.total),
@@ -222,8 +244,11 @@ export async function clearAllSales() {
 // sales' items from analytics and restore stock on void/edit. note is the
 // per-item special-instruction text entered at Checkout (e.g. "less ice").
 export async function fetchAllSaleItemsWithCategory() {
-  const { data, error } = await supabase.from('sale_items').select('sale_id, product_id, product_name, quantity, unit_price, note, add_ons, products(category, cost_price)')
-  if (error) throw error
+  const data = await fetchAllRows(
+    'sale_items',
+    'sale_id, product_id, product_name, quantity, unit_price, note, add_ons, products(category, cost_price)',
+    [['id', { ascending: true }]]
+  )
   return data.map(item => ({
     saleId: item.sale_id,
     productId: item.product_id,
