@@ -3,6 +3,7 @@
 // WebSocket), whereas PrintNode's REST API lets any device (Mac, iPad,
 // etc.) trigger a print on the same registered printer.
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from './categories'
+import { LOGO_RASTER_BASE64 } from './receiptLogo'
 
 const PRINTNODE_API_KEY = import.meta.env.VITE_PRINTNODE_API_KEY
 const PRINTNODE_PRINTER_ID = 75810640
@@ -13,19 +14,27 @@ const RECEIPT_WIDTH = 48
 
 const ESC = '\x1B'
 const GS = '\x1D'
-const FS = '\x1C'
 const INIT = `${ESC}@`
 const FULL_CUT = `${GS}V\x00`
 // Pulses drawer-kick pin 2 (ESC p 0 25 250) — opens a cash drawer wired
 // into the printer's RJ11/RJ12 drawer-kick port.
 const KICK_DRAWER = `${ESC}p\x00\x19\xFA`
 
-// NV image slot the Dimp'z Cafe logo is stored in on the XP-T80Q itself
-// (uploaded once via scripts/upload-logo-to-printer.mjs, FS q). Printing it
-// only needs this 4-byte reference (FS p n m) instead of resending the
-// bitmap on every job. Customer Copy only — see buildReceiptText.
-const LOGO_NV_IMAGE_ID = 1
-const PRINT_LOGO = `${FS}p${String.fromCharCode(LOGO_NV_IMAGE_ID)}\x00`
+// Dimp'z Cafe logo, printed inline via ESC/POS `GS v 0` (raster bit image —
+// see scripts/generate-logo-raster.mjs, rerun it if the logo image changes).
+// Customer Copy only — see buildReceiptText.
+//
+// This replaced an earlier attempt using the legacy `FS q`/`FS p` "NV bit
+// image" commands (store once on the printer, print by reference). That
+// command is capped at roughly one print line's height — our logo was far
+// taller — and the oversized image desynced the printer's parser, garbling
+// every byte printed after it in the same job. GS v 0 has no such cap and
+// carries the bitmap inline instead of relying on NV storage, so there's no
+// separate upload step and no stored state that can go stale or corrupt.
+// It's followed by INIT to force the printer back to a known text state
+// before the rest of the receipt, in case a clone leaves line-spacing or
+// print position altered after a raster image.
+const PRINT_LOGO = atob(LOGO_RASTER_BASE64) + INIT
 
 export interface ReceiptAddOn {
   name: string
