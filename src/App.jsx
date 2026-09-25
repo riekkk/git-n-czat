@@ -203,6 +203,13 @@ function IconMinus() {
     </svg>
   )
 }
+function IconChevronDown() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  )
+}
 function IconTrash() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2871,6 +2878,11 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
   const [reprintTarget, setReprintTarget] = useState(null)
   const [orderTypeFilter, setOrderTypeFilter] = useState('all')
   const [expandedCategory, setExpandedCategory] = useState(null)
+  // Transaction History day grouping: a day's expanded/collapsed state only
+  // needs tracking once the user overrides the default (most recent day
+  // open, the rest closed) — dayKey -> boolean.
+  const [dayOverrides, setDayOverrides] = useState(new Map())
+  const [dateFilter, setDateFilter] = useState('')
   const now = new Date()
 
   const load = () => {
@@ -2928,6 +2940,37 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
     .filter(s => !s.is_staff_order)
     .filter(s => orderTypeFilter === 'all' || s.order_type === orderTypeFilter)
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+
+  // Group into day sections — dayKey is a plain YYYY-MM-DD in the browser's
+  // local time (same timezone every other timestamp on this page already
+  // renders in), so it sorts correctly as a string and matches the <input
+  // type="date"> filter's own value format. transactionList is already
+  // sorted newest-first, so Map insertion order keeps days newest-first too.
+  const dayGroupsMap = new Map()
+  transactionList.forEach(sale => {
+    const saleDate = new Date(sale.created_at)
+    const dayKey = `${saleDate.getFullYear()}-${String(saleDate.getMonth() + 1).padStart(2, '0')}-${String(saleDate.getDate()).padStart(2, '0')}`
+    if (!dayGroupsMap.has(dayKey)) dayGroupsMap.set(dayKey, [])
+    dayGroupsMap.get(dayKey).push(sale)
+  })
+  const dayGroups = Array.from(dayGroupsMap.entries()).map(([dayKey, daySales]) => ({
+    dayKey,
+    label: new Date(`${dayKey}T00:00:00`).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }),
+    sales: daySales,
+    count: daySales.length,
+    // Same exclusions as totalRevenue above: voided and (already, via
+    // transactionList) staff orders don't count toward revenue.
+    revenue: daySales.filter(s => s.status !== 'voided').reduce((sum, s) => sum + s.total, 0),
+  }))
+  const visibleDayGroups = dateFilter ? dayGroups.filter(g => g.dayKey === dateFilter) : dayGroups
+  const isDayExpanded = (dayKey, index) => dayOverrides.has(dayKey) ? dayOverrides.get(dayKey) : index === 0
+  const toggleDay = (dayKey, index) => {
+    setDayOverrides(prev => {
+      const next = new Map(prev)
+      next.set(dayKey, !isDayExpanded(dayKey, index))
+      return next
+    })
+  }
 
   // Clearing, voiding, and editing all touch financial records, so each is
   // gated behind re-entering the signed-in staff account's login password —
@@ -3282,7 +3325,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
       <div className="mt-6 bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
         <div className="flex items-center justify-between gap-3 flex-wrap px-5 py-4 border-b border-[#f0e8d8]">
           <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">Transaction History</h2>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-1 bg-[#fff9ea] border border-[#e8ddc8] rounded-full p-1">
               {[
                 { key: 'all', label: 'All' },
@@ -3300,6 +3343,19 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                 </button>
               ))}
             </div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={e => setDateFilter(e.target.value)}
+                className="text-xs px-2.5 py-1.5 rounded-lg border border-[#e8ddc8] text-[#7a6a50] bg-white focus:outline-none focus:border-[#ddcca6]"
+              />
+              {dateFilter && (
+                <button onClick={() => setDateFilter('')} className="text-xs text-[#a8977e] hover:text-[#2c2416] px-1" title="Clear date filter">
+                  <IconX />
+                </button>
+              )}
+            </div>
             <span className="text-xs text-[#a8977e]">{sales.length} total</span>
           </div>
         </div>
@@ -3310,47 +3366,77 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
               {sales.filter(s => !s.is_staff_order).length === 0 ? 'No transactions yet' : `No ${orderTypeLabel(orderTypeFilter) || ''} transactions`}
             </p>
           </div>
+        ) : visibleDayGroups.length === 0 ? (
+          <div className="text-center py-16 text-[#a8977e]">
+            <p className="text-4xl mb-3">🧾</p>
+            <p className="font-medium text-[#2c2416]">No transactions on {new Date(`${dateFilter}T00:00:00`).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+          </div>
         ) : (
-          <div className="divide-y divide-[#f5edd6]">
-            {transactionList.map(sale => {
-              const isVoided = sale.status === 'voided'
-              const saleLineItems = itemsBySale.get(sale.id) || []
-              const itemCount = saleLineItems.reduce((sum, i) => sum + i.qty, 0)
+          <div className="divide-y divide-[#f0e8d8]">
+            {visibleDayGroups.map((group, index) => {
+              const expanded = dateFilter ? true : isDayExpanded(group.dayKey, index)
               return (
-                <div key={sale.id} className={`flex items-center justify-between gap-4 px-5 py-4 ${isVoided ? 'opacity-50' : 'hover:bg-[#fffcf5]'} transition-colors`}>
-                  <div className="flex items-center gap-4 min-w-0">
-                    <div className="w-9 h-9 rounded-xl bg-[#fff9ea] flex items-center justify-center text-[#a8977e] text-xs font-mono shrink-0">
-                      {String(sale.id).slice(-2)}
+                <div key={group.dayKey}>
+                  <button
+                    type="button"
+                    onClick={() => !dateFilter && toggleDay(group.dayKey, index)}
+                    className="w-full flex items-center justify-between gap-3 px-5 py-3 bg-[#fffcf5] hover:bg-[#fff9ea] transition-colors text-left"
+                  >
+                    <div className="flex items-center gap-2 text-[#7a6a50]">
+                      {!dateFilter && <span className={`transition-transform ${expanded ? 'rotate-180' : ''}`}><IconChevronDown /></span>}
+                      <span className="text-sm font-semibold text-[#2c2416]">{group.label}</span>
                     </div>
-                    <div className="min-w-0">
-                      <p className={`text-sm font-medium text-[#2c2416] truncate ${isVoided ? 'line-through' : ''}`}>
-                        {sale.customer_name || 'Walk-in'}
-                      </p>
-                      <p className="text-xs text-[#a8977e]">
-                        {itemCount} item{itemCount !== 1 ? 's' : ''} · {new Date(sale.created_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })} · {paymentLabel(sale.payment_method)}
-                        {orderTypeLabel(sale.order_type) && ` · ${orderTypeLabel(sale.order_type)}`}
-                      </p>
-                      {isVoided && sale.voided_at && (
-                        <p className="text-[10px] text-[#b85c42] mt-0.5">Voided {new Date(sale.voided_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
-                      )}
-                      {!isVoided && sale.edited_at && (
-                        <p className="text-[10px] text-[#c49a3c] mt-0.5">Edited {new Date(sale.edited_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
-                      )}
+                    <div className="flex items-center gap-3 text-xs text-[#7a6a50]">
+                      <span>{group.count} transaction{group.count !== 1 ? 's' : ''}</span>
+                      <span className="font-semibold text-[#2c2416]">{formatPHP(group.revenue)}</span>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    {isVoided ? (
-                      <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-[#fdf0ec] text-[#b85c42]">VOIDED</span>
-                    ) : (
-                      <span className="hidden sm:inline text-xs px-2.5 py-1 rounded-full font-medium bg-[#f0faf0] text-[#6b9e72]">completed</span>
-                    )}
-                    <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(sale.total)}</span>
-                    <TransactionMenu
-                      onReprint={() => setReprintTarget(sale)}
-                      onEdit={!isVoided ? () => setEditPasswordTarget(sale) : undefined}
-                      onVoid={!isVoided ? () => setVoidTarget(sale) : undefined}
-                    />
-                  </div>
+                  </button>
+                  {expanded && (
+                    <div className="divide-y divide-[#f5edd6]">
+                      {group.sales.map(sale => {
+                        const isVoided = sale.status === 'voided'
+                        const saleLineItems = itemsBySale.get(sale.id) || []
+                        const itemCount = saleLineItems.reduce((sum, i) => sum + i.qty, 0)
+                        return (
+                          <div key={sale.id} className={`flex items-center justify-between gap-4 px-5 py-4 ${isVoided ? 'opacity-50' : 'hover:bg-[#fffcf5]'} transition-colors`}>
+                            <div className="flex items-center gap-4 min-w-0">
+                              <div className="w-9 h-9 rounded-xl bg-[#fff9ea] flex items-center justify-center text-[#a8977e] text-xs font-mono shrink-0">
+                                {String(sale.id).slice(-2)}
+                              </div>
+                              <div className="min-w-0">
+                                <p className={`text-sm font-medium text-[#2c2416] truncate ${isVoided ? 'line-through' : ''}`}>
+                                  {sale.customer_name || 'Walk-in'}
+                                </p>
+                                <p className="text-xs text-[#a8977e]">
+                                  {itemCount} item{itemCount !== 1 ? 's' : ''} · {new Date(sale.created_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })} · {paymentLabel(sale.payment_method)}
+                                  {orderTypeLabel(sale.order_type) && ` · ${orderTypeLabel(sale.order_type)}`}
+                                </p>
+                                {isVoided && sale.voided_at && (
+                                  <p className="text-[10px] text-[#b85c42] mt-0.5">Voided {new Date(sale.voided_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                                )}
+                                {!isVoided && sale.edited_at && (
+                                  <p className="text-[10px] text-[#c49a3c] mt-0.5">Edited {new Date(sale.edited_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3 shrink-0">
+                              {isVoided ? (
+                                <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-[#fdf0ec] text-[#b85c42]">VOIDED</span>
+                              ) : (
+                                <span className="hidden sm:inline text-xs px-2.5 py-1 rounded-full font-medium bg-[#f0faf0] text-[#6b9e72]">completed</span>
+                              )}
+                              <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(sale.total)}</span>
+                              <TransactionMenu
+                                onReprint={() => setReprintTarget(sale)}
+                                onEdit={!isVoided ? () => setEditPasswordTarget(sale) : undefined}
+                                onVoid={!isVoided ? () => setVoidTarget(sale) : undefined}
+                              />
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )
             })}
