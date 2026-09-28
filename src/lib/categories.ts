@@ -11,3 +11,16 @@
 // silently never route to Kitchen or Barista.
 export const DRINK_CATEGORIES = new Set(['Coffee', 'Tea', 'Drinks', 'Matcha', 'Refreshers', 'Frappe', 'Milk Series', 'Slushy Coconut', 'Milk', 'Drink Add-ons'])
 export const PASTRY_FOOD_CATEGORIES = new Set(['Pastry', 'Food', 'Nasi Goreng', 'Main Dish', 'Burgers', 'Pasta', 'Appetizers', 'Egg Brûlée', 'Food Add-ons'])
+
+// Order-level charges (e.g. the Take Out packaging fee) are rung up as
+// ordinary products so they land in the sale total and sale_items like any
+// other line — but they aren't menu items: they never print on a receipt,
+// never route to Kitchen/Barista, never move stock, and are left out of
+// item rankings (Top Products, Category Breakdown). Matched by name rather
+// than id/category because sale_items only snapshots product_name, and
+// this has to work for historical rows and reprints too.
+const ORDER_CHARGE_NAMES = new Set(['packaging fee'])
+
+export function isOrderCharge(item: { name?: string | null } | null | undefined): boolean {
+  return !!item?.name && ORDER_CHARGE_NAMES.has(item.name.trim().toLowerCase())
+}

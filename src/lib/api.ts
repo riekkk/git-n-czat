@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { isOrderCharge } from './categories'
 
 const LOW_STOCK_THRESHOLD = 15
 
@@ -190,8 +191,10 @@ export async function recordSale({ customerName, items, total, paymentMethod, am
   // decrement so we never write a stale value; not fully atomic under
   // concurrent checkouts, but this app runs from a single POS terminal.
   // Each deduction also cascades through that product's recipe (if any)
-  // into ingredient stock — see applyRecipeStockDelta.
+  // into ingredient stock — see applyRecipeStockDelta. Order-level charges
+  // (packaging fee) are skipped entirely — they're not stock (isOrderCharge).
   for (const i of items) {
+    if (isOrderCharge(i)) continue
     const { data: current, error: fetchErr } = await supabase.from('products').select('stock').eq('id', i.id).single()
     if (fetchErr) throw fetchErr
     // numeric columns come back as strings — Number() before arithmetic.
@@ -238,7 +241,7 @@ export async function fetchRecentSales(daysBack = 7) {
 
   const { data, error } = await supabase
     .from('sales')
-    .select('id, customer_name, total, created_at, sale_items(quantity)')
+    .select('id, customer_name, total, created_at, sale_items(product_name, quantity)')
     .gte('created_at', start.toISOString())
     .neq('status', 'voided')
     .eq('is_staff_order', false)
@@ -250,7 +253,7 @@ export async function fetchRecentSales(daysBack = 7) {
     customer_name: sale.customer_name,
     total: Number(sale.total),
     created_at: sale.created_at,
-    itemCount: (sale.sale_items || []).reduce((sum, i) => sum + i.quantity, 0),
+    itemCount: (sale.sale_items || []).filter(i => !isOrderCharge({ name: i.product_name })).reduce((sum, i) => sum + i.quantity, 0),
   }))
 }
 
@@ -343,7 +346,7 @@ export async function fetchAllSaleItemsWithCategory() {
 export async function voidSale(saleId, voidedBy) {
   const { data: lineItems, error: itemsError } = await supabase
     .from('sale_items')
-    .select('product_id, quantity, add_ons')
+    .select('product_id, product_name, quantity, add_ons')
     .eq('sale_id', saleId)
   if (itemsError) throw itemsError
 
@@ -365,6 +368,7 @@ export async function voidSale(saleId, voidedBy) {
   }
 
   for (const item of lineItems) {
+    if (isOrderCharge({ name: item.product_name })) continue // never deducted, so nothing to restore
     if (item.product_id) await restoreStock(item.product_id, item.quantity)
     for (const addOn of item.add_ons || []) {
       if (addOn.productId) await restoreStock(addOn.productId, item.quantity)
@@ -388,16 +392,18 @@ export async function voidSale(saleId, voidedBy) {
 export async function editSale(saleId, { items, paymentMethod, amountReceived, changeGiven, editedBy }) {
   const { data: oldItems, error: oldItemsError } = await supabase
     .from('sale_items')
-    .select('product_id, quantity, add_ons')
+    .select('product_id, product_name, quantity, add_ons')
     .eq('sale_id', saleId)
   if (oldItemsError) throw oldItemsError
 
   // Combines each line's own product with any add-on products it used (one
   // add-on unit per parent unit) into a single per-product quantity map, so
   // stock deltas below account for add-ons the same way as the base item.
+  // Order-level charges (packaging fee) never touch stock, so they're left
+  // out of both sides.
   const qtyByProduct = rows => {
     const map = new Map()
-    rows.forEach(row => {
+    rows.filter(row => !isOrderCharge(row)).forEach(row => {
       if (row.productId) map.set(row.productId, (map.get(row.productId) || 0) + row.qty)
       ;(row.addOns || []).forEach(addOn => {
         if (addOn.productId) map.set(addOn.productId, (map.get(addOn.productId) || 0) + row.qty)
@@ -405,8 +411,8 @@ export async function editSale(saleId, { items, paymentMethod, amountReceived, c
     })
     return map
   }
-  const oldQtyByProduct = qtyByProduct(oldItems.map(i => ({ productId: i.product_id, qty: i.quantity, addOns: i.add_ons })))
-  const newQtyByProduct = qtyByProduct(items.map(i => ({ productId: i.productId, qty: i.qty, addOns: i.addOns })))
+  const oldQtyByProduct = qtyByProduct(oldItems.map(i => ({ productId: i.product_id, name: i.product_name, qty: i.quantity, addOns: i.add_ons })))
+  const newQtyByProduct = qtyByProduct(items.map(i => ({ productId: i.productId, name: i.name, qty: i.qty, addOns: i.addOns })))
 
   const productIds = new Set([...oldQtyByProduct.keys(), ...newQtyByProduct.keys()])
   for (const productId of productIds) {

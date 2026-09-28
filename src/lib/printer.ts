@@ -2,7 +2,7 @@
 // only works on the same device as the browser (it talks to a local
 // WebSocket), whereas PrintNode's REST API lets any device (Mac, iPad,
 // etc.) trigger a print on the same registered printer.
-import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from './categories'
+import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from './categories'
 import { LOGO_RASTER_BASE64 } from './receiptLogo'
 
 const PRINTNODE_API_KEY = import.meta.env.VITE_PRINTNODE_API_KEY
@@ -57,6 +57,13 @@ export interface ReceiptItem {
 // prices at all).
 function addOnsCost(item: ReceiptItem): number {
   return (item.addOns || []).reduce((sum, a) => sum + (a.price || 0), 0)
+}
+
+// Every copy (and every Kitchen/Barista trigger check) prints from this,
+// never order.items directly — order-level charges like the packaging fee
+// stay in the order total but never print as a line (see isOrderCharge).
+function printableItems(order: ReceiptOrder): ReceiptItem[] {
+  return order.items.filter(item => !isOrderCharge(item))
 }
 
 export interface ReceiptOrder {
@@ -197,7 +204,7 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   // needs to see on their own copy, so they're gated to the Cafe Copy —
   // add-ons print on both since they're billable and change the line price.
   const showItemNotes = copyLabel === 'CAFE COPY'
-  order.items.forEach(item => {
+  printableItems(order).forEach(item => {
     const unitPrice = item.price + addOnsCost(item)
     parts.push(wrapLine(itemNameForPrint(item, showItemNotes), width))
     parts.push(padLine(`${item.qty} x ${formatMoneyForPrint(unitPrice)}`, formatMoneyForPrint(unitPrice * item.qty), width))
@@ -229,7 +236,7 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
 function buildKitchenReceiptText(order: ReceiptOrder): string {
   const width = RECEIPT_WIDTH
   const divider = `${'-'.repeat(width)}\n`
-  const foodItems = order.items.filter(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
+  const foodItems = printableItems(order).filter(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
   const parts: string[] = [INIT]
 
   if (order.isReprint) {
@@ -272,7 +279,7 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
 function buildBaristaReceiptText(order: ReceiptOrder): string {
   const width = RECEIPT_WIDTH
   const divider = `${'-'.repeat(width)}\n`
-  const drinkItems = order.items.filter(item => item.category && DRINK_CATEGORIES.has(item.category))
+  const drinkItems = printableItems(order).filter(item => item.category && DRINK_CATEGORIES.has(item.category))
   const parts: string[] = [INIT]
 
   if (order.isReprint) {
@@ -366,8 +373,14 @@ export async function printReceipt(order: ReceiptOrder): Promise<void> {
   // separate API calls, since the printer processes them sequentially
   // either way (kick drawer, print + cut, print + cut, [print + cut], [print
   // + cut]).
-  const hasFoodItems = order.items.some(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
-  const hasDrinkItems = order.items.some(item => item.category && DRINK_CATEGORIES.has(item.category))
+  // An order with nothing printable (only the packaging fee) prints no paper
+  // at all — it still kicks the drawer, since money still changed hands.
+  if (printableItems(order).length === 0) {
+    await sendToPrinter(INIT + KICK_DRAWER, `Drawer${order.id ? ` #${order.id.slice(0, 8).toUpperCase()}` : ''}`, order.businessName)
+    return
+  }
+  const hasFoodItems = printableItems(order).some(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
+  const hasDrinkItems = printableItems(order).some(item => item.category && DRINK_CATEGORIES.has(item.category))
   const raw = KICK_DRAWER
     + buildReceiptText(order, 'CUSTOMER COPY')
     + buildReceiptText(order, 'CAFE COPY')
@@ -393,9 +406,11 @@ export async function openCashDrawer(): Promise<void> {
  * drawer kick (no cash changes hands). Every copy is stamped "STAFF ORDER".
  */
 export async function printStaffOrderReceipt(order: ReceiptOrder): Promise<void> {
+  // Nothing printable (only the packaging fee) — no paper, no drawer kick.
+  if (printableItems(order).length === 0) return
   const staffOrder: ReceiptOrder = { ...order, isStaffOrder: true }
-  const hasFoodItems = order.items.some(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
-  const hasDrinkItems = order.items.some(item => item.category && DRINK_CATEGORIES.has(item.category))
+  const hasFoodItems = printableItems(order).some(item => item.category && PASTRY_FOOD_CATEGORIES.has(item.category))
+  const hasDrinkItems = printableItems(order).some(item => item.category && DRINK_CATEGORIES.has(item.category))
   const raw = buildReceiptText(staffOrder, 'CAFE COPY')
     + (hasFoodItems ? buildKitchenReceiptText(staffOrder) : '')
     + (hasDrinkItems ? buildBaristaReceiptText(staffOrder) : '')
@@ -413,6 +428,11 @@ export type ReprintCopyType = 'customer' | 'cafe' | 'kitchen' | 'barista'
  * so it's never mistaken for the original.
  */
 export async function reprintReceipt(order: ReceiptOrder, copyType: ReprintCopyType): Promise<void> {
+  // ReprintButtons hides every option for these, but guard here too so a
+  // fee-only order can never feed paper.
+  if (printableItems(order).length === 0) {
+    throw new Error('Nothing to print — this order only has the packaging fee.')
+  }
   const reprintOrder: ReceiptOrder = { ...order, isReprint: true }
   // isStaffOrder passes through from the caller (order.isStaffOrder) so a
   // reprinted staff-order slip still shows the STAFF ORDER banner.

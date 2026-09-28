@@ -3,7 +3,7 @@ import dimpzCafeLogo from '@/imports/D.png'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
 import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt } from '@/lib/printer'
-import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES } from '@/lib/categories'
+import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
@@ -486,9 +486,13 @@ function ReprintButtons({ order, items, businessName }) {
   const [reprintingType, setReprintingType] = useState(null)
   const [error, setError] = useState('')
 
-  const hasFood = items.some(i => i.category && PASTRY_FOOD_CATEGORIES.has(i.category))
-  const hasDrink = items.some(i => i.category && DRINK_CATEGORIES.has(i.category))
-  const copyTypes = ['customer', 'cafe', ...(hasFood ? ['kitchen'] : []), ...(hasDrink ? ['barista'] : [])]
+  // Order-level charges (packaging fee) never offer a Kitchen/Barista reprint
+  // on their own — printer.ts drops them from every copy anyway.
+  const hasFood = items.some(i => !isOrderCharge(i) && i.category && PASTRY_FOOD_CATEGORIES.has(i.category))
+  const hasDrink = items.some(i => !isOrderCharge(i) && i.category && DRINK_CATEGORIES.has(i.category))
+  // A fee-only order has nothing to print, so it gets no reprint options.
+  const hasPrintable = items.some(i => !isOrderCharge(i))
+  const copyTypes = hasPrintable ? ['customer', 'cafe', ...(hasFood ? ['kitchen'] : []), ...(hasDrink ? ['barista'] : [])] : []
   const copyTypeLabel = t => t === 'customer' ? 'Customer' : t === 'cafe' ? 'Cafe' : t === 'kitchen' ? 'Kitchen' : 'Barista'
 
   const handleReprint = async copyType => {
@@ -514,6 +518,10 @@ function ReprintButtons({ order, items, businessName }) {
     } finally {
       setReprintingType(null)
     }
+  }
+
+  if (copyTypes.length === 0) {
+    return <p className="text-[11px] text-[#a8977e]">Nothing to print (packaging fee only)</p>
   }
 
   return (
@@ -1445,7 +1453,9 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
       <div className="border-t border-dashed border-black my-1.5" />
       <p>Customer: {customerName || 'Walk-in'}</p>
       <div className="border-t border-dashed border-black my-1.5" />
-      {items.map((item, i) => (
+      {/* Same rule as the thermal copies: order-level charges stay in the
+          total but never print as a line (see isOrderCharge). */}
+      {items.filter(item => !isOrderCharge(item)).map((item, i) => (
         <div key={i} className="mb-1">
           <div className="flex justify-between gap-2">
             <span className="flex-1 truncate">{item.name}{item.addOns?.length > 0 && ` + ${item.addOns.map(a => a.name).join(', ')}`}</span>
@@ -3008,9 +3018,14 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
     load()
   }
 
+  // Order-level charges (packaging fee) are real revenue — already in
+  // sale.total, which is what totalRevenue/monthly below sum — but they
+  // aren't menu items, so they're left out of the item rankings.
+  const rankedSaleItems = activeSaleItems.filter(item => !isOrderCharge(item))
+
   // Top products — aggregated from real sale line items
   const productMap = new Map()
-  activeSaleItems.forEach(item => {
+  rankedSaleItems.forEach(item => {
     const entry = productMap.get(item.name) || { name: item.name, sales: 0, revenue: 0 }
     entry.sales += item.qty
     entry.revenue += item.price * item.qty
@@ -3036,7 +3051,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
   // Category breakdown — % of revenue per category from actual sale line items
   const categoryRevenue = new Map()
   let totalCategoryRevenue = 0
-  activeSaleItems.forEach(item => {
+  rankedSaleItems.forEach(item => {
     const cat = item.category || 'Uncategorized'
     const rev = item.price * item.qty
     categoryRevenue.set(cat, (categoryRevenue.get(cat) || 0) + rev)
@@ -3047,10 +3062,10 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
     .sort((a, b) => b.revenue - a.revenue)
 
   // Top items within each category (by qty sold) — feeds the click-through
-  // detail under Category Breakdown. Same activeSaleItems as the % breakdown
+  // detail under Category Breakdown. Same rankedSaleItems as the % breakdown
   // above, so it's subject to the same voided/staff-order/order-type filters.
   const itemsByCategory = new Map()
-  activeSaleItems.forEach(item => {
+  rankedSaleItems.forEach(item => {
     const cat = item.category || 'Uncategorized'
     if (!itemsByCategory.has(cat)) itemsByCategory.set(cat, new Map())
     const catItems = itemsByCategory.get(cat)
@@ -3396,7 +3411,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                       {group.sales.map(sale => {
                         const isVoided = sale.status === 'voided'
                         const saleLineItems = itemsBySale.get(sale.id) || []
-                        const itemCount = saleLineItems.reduce((sum, i) => sum + i.qty, 0)
+                        const itemCount = saleLineItems.filter(i => !isOrderCharge(i)).reduce((sum, i) => sum + i.qty, 0)
                         return (
                           <div key={sale.id} className={`flex items-center justify-between gap-4 px-5 py-4 ${isVoided ? 'opacity-50' : 'hover:bg-[#fffcf5]'} transition-colors`}>
                             <div className="flex items-center gap-4 min-w-0">
@@ -3918,7 +3933,7 @@ export default function App() {
     // applyRecipeStockDelta) — those deltas aren't known client-side, so
     // refetch afterward to pick them up, same as void/edit do below.
     setItems(prev => prev.map(p => {
-      const sold = saleItems.find(i => i.id === p.id)
+      const sold = saleItems.find(i => i.id === p.id && !isOrderCharge(i))
       return sold ? { ...p, stock: Math.max(0, p.stock - sold.qty) } : p
     }))
     refetchItems()
@@ -3930,7 +3945,7 @@ export default function App() {
   const chargeStaffOrder = async ({ customerName, items: saleItems, total }) => {
     const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod: 'staff', isStaffOrder: true })
     setItems(prev => prev.map(p => {
-      const taken = saleItems.find(i => i.id === p.id)
+      const taken = saleItems.find(i => i.id === p.id && !isOrderCharge(i))
       return taken ? { ...p, stock: Math.max(0, p.stock - taken.qty) } : p
     }))
     refetchItems()
