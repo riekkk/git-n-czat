@@ -267,6 +267,21 @@ function IconFileText() {
   )
 }
 
+function IconEye() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+}
+function IconEyeOff() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" /><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  )
+}
+
 const NAV_ICONS = {
   dashboard: <IconGrid />,
   products: <IconBox />,
@@ -420,6 +435,69 @@ function PasswordConfirmModal({ title, message, confirmLabel = 'Confirm', onConf
         </div>
       </form>
     </Modal>
+  )
+}
+
+// ─── Password-gated financial figures (Dashboard/Reports) ─────────────────
+// Revenue/profit figures are hidden from staff by default. This is purely
+// display: callers keep computing the real numbers as before and only pass
+// them through money()/percent() at render time, so nothing downstream
+// (COGS, exports, charts' bar heights) depends on whether they're shown.
+// Reveal state lives in the page component that calls this, so it resets
+// (re-hides) on leaving the page or reloading, and the eye toggle re-hides
+// it on demand.
+const MASKED_MONEY = '₱ ●●●●●'
+
+function useFinancialReveal(userEmail) {
+  const [revealed, setRevealed] = useState(false)
+  const [promptOpen, setPromptOpen] = useState(false)
+  // Something to run once unlocked (e.g. a PDF export that includes profit).
+  const afterRevealRef = useRef(null)
+
+  const requestReveal = afterReveal => {
+    if (revealed) { afterReveal?.(); return }
+    afterRevealRef.current = afterReveal || null
+    setPromptOpen(true)
+  }
+  const toggle = () => (revealed ? setRevealed(false) : requestReveal())
+  const closePrompt = () => { afterRevealRef.current = null; setPromptOpen(false) }
+
+  const money = amount => (revealed ? formatPHP(amount) : MASKED_MONEY)
+  // Compact bar-chart label (₱1.2k), masked the same way.
+  const moneyShort = amount => (!revealed ? '₱ ●●●' : amount >= 1000 ? `₱${(amount / 1000).toFixed(1)}k` : formatPHP(amount))
+  const percent = value => (revealed ? `${value.toFixed(1)}%` : '●●%')
+
+  const prompt = promptOpen && (
+    <PasswordConfirmModal
+      title="Show financial figures"
+      message="Revenue and profit figures are hidden. Re-enter your account password to show them."
+      confirmLabel="Show"
+      onConfirm={async password => {
+        await verifyStaffPassword(userEmail, password)
+        setRevealed(true)
+        setPromptOpen(false)
+        const after = afterRevealRef.current
+        afterRevealRef.current = null
+        after?.()
+      }}
+      onClose={closePrompt}
+    />
+  )
+
+  return { revealed, toggle, requestReveal, money, moneyShort, percent, prompt }
+}
+
+function FinancialRevealToggle({ revealed, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={revealed ? 'Hide revenue & profit figures' : 'Show revenue & profit figures (password required)'}
+      className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors"
+    >
+      {revealed ? <IconEyeOff /> : <IconEye />}
+      {revealed ? 'Hide figures' : 'Show figures'}
+    </button>
   )
 }
 
@@ -889,7 +967,8 @@ function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product', item }
 }
 
 // ─── Dashboard Screen ───────────────────────────────────────────────────────
-function Dashboard({ onNavigate, cart }) {
+function Dashboard({ onNavigate, cart, userEmail }) {
+  const financials = useFinancialReveal(userEmail)
   const [sales, setSales] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -936,7 +1015,7 @@ function Dashboard({ onNavigate, cart }) {
   const stats = [
     {
       label: "Today's Revenue",
-      value: formatPHP(todayRevenue),
+      value: financials.money(todayRevenue),
       sub: todayOrders > 0 ? `From ${todayOrders} order${todayOrders !== 1 ? 's' : ''}` : 'No sales yet today',
     },
     {
@@ -946,7 +1025,7 @@ function Dashboard({ onNavigate, cart }) {
     },
     {
       label: 'Avg. Order',
-      value: todayOrders > 0 ? formatPHP(todayAvg) : '—',
+      value: todayOrders > 0 ? financials.money(todayAvg) : '—',
       sub: todayOrders > 0 ? 'Per completed sale' : 'No orders yet',
     },
     {
@@ -965,11 +1044,14 @@ function Dashboard({ onNavigate, cart }) {
   return (
     <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="mb-8">
-        <p className="text-sm text-[#a8977e] font-medium mb-1">{dateLabel}</p>
-        <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl md:text-3xl font-semibold text-[#2c2416]">
-          {timeGreeting}, Dimp'z Cafe
-        </h1>
+      <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-sm text-[#a8977e] font-medium mb-1">{dateLabel}</p>
+          <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl md:text-3xl font-semibold text-[#2c2416]">
+            {timeGreeting}, Dimp'z Cafe
+          </h1>
+        </div>
+        <FinancialRevealToggle revealed={financials.revealed} onToggle={financials.toggle} />
       </div>
 
       {/* Quick actions */}
@@ -1025,7 +1107,7 @@ function Dashboard({ onNavigate, cart }) {
                 {new Date(now.getTime() - 6 * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}–{now.toLocaleDateString('en-US', { day: 'numeric' })}
               </span>
             </div>
-            <WeeklyChart sales={sales} />
+            <WeeklyChart sales={sales} formatLabel={financials.moneyShort} />
           </div>
 
           {/* Recent transactions */}
@@ -1062,11 +1144,12 @@ function Dashboard({ onNavigate, cart }) {
           </div>
         </>
       )}
+      {financials.prompt}
     </div>
   )
 }
 
-function WeeklyChart({ sales }) {
+function WeeklyChart({ sales, formatLabel }) {
   const now = new Date()
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(now)
@@ -1092,7 +1175,7 @@ function WeeklyChart({ sales }) {
     <div className="flex items-end gap-2 md:gap-3 h-32">
       {data.map((d, i) => (
         <div key={i} className="flex-1 flex flex-col items-center gap-2">
-          <p className="text-xs text-[#a8977e] font-medium">{d.val >= 1000 ? `₱${(d.val / 1000).toFixed(1)}k` : formatPHP(d.val)}</p>
+          <p className="text-xs text-[#a8977e] font-medium">{formatLabel(d.val)}</p>
           <div className="w-full rounded-t-lg transition-all duration-700" style={{
             height: `${(d.val / max) * 80}px`,
             background: i === data.length - 1
@@ -2888,6 +2971,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
   const [reprintTarget, setReprintTarget] = useState(null)
   const [orderTypeFilter, setOrderTypeFilter] = useState('all')
   const [expandedCategory, setExpandedCategory] = useState(null)
+  const financials = useFinancialReveal(userEmail)
   // Transaction History day grouping: a day's expanded/collapsed state only
   // needs tracking once the user overrides the default (most recent day
   // open, the rest closed) — dayKey -> boolean.
@@ -3129,6 +3213,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 flex-wrap">
+          <FinancialRevealToggle revealed={financials.revealed} onToggle={financials.toggle} />
           <button
             onClick={() => setShowClearConfirm(true)}
             disabled={sales.length === 0}
@@ -3145,14 +3230,14 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
             <IconTable /> Excel
           </button>
           <button
-            onClick={() => exportSalesToPDF(activeSales, businessName, cogsSummary)}
+            onClick={() => financials.requestReveal(() => exportSalesToPDF(activeSales, businessName, cogsSummary))}
             disabled={activeSales.length === 0}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
           >
             <IconFileText /> PDF
           </button>
           <button
-            onClick={() => exportSalesToWord(activeSales, businessName, cogsSummary)}
+            onClick={() => financials.requestReveal(() => exportSalesToWord(activeSales, businessName, cogsSummary))}
             disabled={activeSales.length === 0}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
           >
@@ -3165,10 +3250,10 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         {[
           { label: 'Total Transaction Count', value: String(totalTransactionCount), icon: '🧾' },
-          { label: 'Avg Order Value', value: formatPHP(avgOrderValue), icon: '💵' },
+          { label: 'Avg Order Value', value: financials.money(avgOrderValue), icon: '💵' },
           { label: 'Total Drinks Qty', value: String(totalDrinksQty), icon: '☕' },
           { label: 'Total Pastry/Food Qty', value: String(totalPastryFoodQty), icon: '🥐' },
-          { label: 'Total Revenue', value: formatPHP(totalRevenue), icon: '📈' },
+          { label: 'Total Revenue', value: financials.money(totalRevenue), icon: '📈' },
         ].map((stat, i) => (
           <div key={i} className="bg-white rounded-2xl p-5 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
             <div className="flex items-center justify-between mb-3">
@@ -3196,19 +3281,19 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="text-center bg-white/70 rounded-xl px-3 py-4 border border-[#ecdfc0]">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Total Sales</p>
-            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#2c2416]">{formatPHP(totalRevenue)}</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#2c2416]">{financials.money(totalRevenue)}</p>
           </div>
           <div className="text-center bg-white/70 rounded-xl px-3 py-4 border border-[#ecdfc0]">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Total Cost (COGS)</p>
-            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#b85c42]">{formatPHP(totalCOGS)}</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#b85c42]">{financials.money(totalCOGS)}</p>
           </div>
           <div className="text-center bg-white/70 rounded-xl px-3 py-4 border border-[#ecdfc0]">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Net Profit</p>
-            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#6b9e72]">{formatPHP(netProfit)}</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#6b9e72]">{financials.money(netProfit)}</p>
           </div>
           <div className="text-center bg-white/70 rounded-xl px-3 py-4 border border-[#ecdfc0]">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-1.5">Profit Margin</p>
-            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#c49a3c]">{profitMargin.toFixed(1)}%</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-bold text-[#c49a3c]">{financials.percent(profitMargin)}</p>
           </div>
         </div>
         {totalCOGS === 0 && (
@@ -3226,7 +3311,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
             <div className="flex items-end gap-2 h-36">
               {monthly.map((m, i) => (
                 <div key={i} className="flex-1 flex flex-col items-center gap-1.5">
-                  <p className="text-[10px] text-[#a8977e]">{m.revenue >= 1000 ? `₱${(m.revenue / 1000).toFixed(1)}k` : formatPHP(m.revenue)}</p>
+                  <p className="text-[10px] text-[#a8977e]">{financials.moneyShort(m.revenue)}</p>
                   <div
                     className="w-full rounded-t-lg"
                     style={{
@@ -3263,7 +3348,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                       <span className="text-xs text-[#a8977e] w-4">{i + 1}.</span>
                       <span className="text-sm font-medium text-[#2c2416]">{p.name}</span>
                     </div>
-                    <span className="text-sm font-semibold text-[#2c2416]">{formatPHP(p.revenue)}</span>
+                    <span className="text-sm font-semibold text-[#2c2416]">{financials.money(p.revenue)}</span>
                   </div>
                   <div className="h-1.5 rounded-full bg-[#f5edd6] overflow-hidden">
                     <div
@@ -3403,7 +3488,7 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
                     </div>
                     <div className="flex items-center gap-3 text-xs text-[#7a6a50]">
                       <span>{group.count} transaction{group.count !== 1 ? 's' : ''}</span>
-                      <span className="font-semibold text-[#2c2416]">{formatPHP(group.revenue)}</span>
+                      <span className="font-semibold text-[#2c2416]">{financials.money(group.revenue)}</span>
                     </div>
                   </button>
                   {expanded && (
@@ -3505,6 +3590,8 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
         <ReprintButtons order={reprintTarget} items={itemsBySale.get(reprintTarget.id) || []} businessName={businessName} />
       </Modal>
     )}
+
+    {financials.prompt}
     </>
   )
 }
@@ -4040,7 +4127,7 @@ export default function App() {
 
   const renderScreen = () => {
     switch (screen) {
-      case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} />
+      case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} userEmail={session?.user?.email} />
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
       case 'checkout': return <Checkout items={items} cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onUpdateAddOns={updateCartItemAddOns} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
       case 'staffOrder': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToStaffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} cart={staffCart} onNavigate={setScreen} checkoutScreen="staffOrderCheckout" isStaffMode />
