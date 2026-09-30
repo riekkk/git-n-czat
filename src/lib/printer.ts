@@ -153,6 +153,17 @@ function staffOrderBanner(width: number): string {
   return centerLine('*** STAFF ORDER ***', width)
 }
 
+// Bold + double-height for the lines staff scan for first (customer name,
+// order type) on the café-side copies. Double-height only — double-width
+// would halve the 48-column line and break centerLine/wrapLine's math.
+// Both settings are reset right after the line (after its newline, so the
+// whole line prints enlarged) so nothing printed next inherits them.
+const EMPHASIS_ON = `${ESC}E\x01${GS}!\x01`
+const EMPHASIS_OFF = `${GS}!\x00${ESC}E\x00`
+function emphasize(line: string): string {
+  return `${EMPHASIS_ON}${line}${EMPHASIS_OFF}`
+}
+
 function padLine(left: string, right: string, width = RECEIPT_WIDTH): string {
   const gap = Math.max(1, width - left.length - right.length)
   return `${left}${' '.repeat(gap)}${right}\n`
@@ -192,12 +203,15 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   if (order.id) {
     parts.push(centerLine(`Order #${order.id.slice(0, 8).toUpperCase()}`, width))
   }
+  // Customer Copy stays plain; every other copy from here (Cafe) gets the
+  // bold/tall name + order type — see emphasize.
+  const emphasis = copyLabel === 'CUSTOMER COPY' ? (line: string) => line : emphasize
   const orderTypeLabel = orderTypeLabelForPrint(order.orderType)
   if (orderTypeLabel) {
-    parts.push(centerLine(`Order Type: ${orderTypeLabel}`, width))
+    parts.push(emphasis(centerLine(`Order Type: ${orderTypeLabel}`, width)))
   }
   parts.push(divider)
-  parts.push(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width))
+  parts.push(emphasis(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width)))
   parts.push(divider)
 
   // Per-item notes are café-facing prep context, not something a customer
@@ -255,9 +269,9 @@ function buildKitchenReceiptText(order: ReceiptOrder): string {
   }
   const kitchenOrderTypeLabel = orderTypeLabelForPrint(order.orderType)
   if (kitchenOrderTypeLabel) {
-    parts.push(centerLine(`Order Type: ${kitchenOrderTypeLabel}`, width))
+    parts.push(emphasize(centerLine(`Order Type: ${kitchenOrderTypeLabel}`, width)))
   }
-  parts.push(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width))
+  parts.push(emphasize(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width)))
   parts.push(divider)
 
   foodItems.forEach(item => {
@@ -298,9 +312,9 @@ function buildBaristaReceiptText(order: ReceiptOrder): string {
   }
   const baristaOrderTypeLabel = orderTypeLabelForPrint(order.orderType)
   if (baristaOrderTypeLabel) {
-    parts.push(centerLine(`Order Type: ${baristaOrderTypeLabel}`, width))
+    parts.push(emphasize(centerLine(`Order Type: ${baristaOrderTypeLabel}`, width)))
   }
-  parts.push(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width))
+  parts.push(emphasize(wrapLine(`Customer: ${sanitizeForPrint(order.customerName) || 'Walk-in'}`, width)))
   parts.push(divider)
 
   drinkItems.forEach(item => {
