@@ -23,6 +23,13 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: '◬' },
 ]
 
+// Roles live in the auth account's app_metadata.role (only settable with the
+// service role, so a user can't change their own). No role = full staff.
+// Inventory Staff may only use Inventory — enforced here by always rendering
+// Inventory for them regardless of `screen`, and in the database by RLS on
+// sales/sale_items/drawer_openings (see the inventory_staff_role migration).
+const INVENTORY_STAFF_ROLE = 'inventory_staff'
+
 const SETTINGS_STORAGE_KEY = 'dimpzcafe-settings'
 const DEFAULT_SETTINGS = {
   businessName: "Dimp'z Cafe",
@@ -443,9 +450,8 @@ function PasswordConfirmModal({ title, message, confirmLabel = 'Confirm', onConf
 // display: callers keep computing the real numbers as before and only pass
 // them through money()/percent() at render time, so nothing downstream
 // (COGS, exports, charts' bar heights) depends on whether they're shown.
-// Reveal state lives in the page component that calls this, so it resets
-// (re-hides) on leaving the page or reloading, and the eye toggle re-hides
-// it on demand.
+// Reveal state lives in App (one unlock covers both Dashboard and Reports),
+// so it re-hides on the eye toggle, on logout, or on reload.
 const MASKED_MONEY = '₱ ●●●●●'
 
 function useFinancialReveal(userEmail) {
@@ -460,6 +466,7 @@ function useFinancialReveal(userEmail) {
     setPromptOpen(true)
   }
   const toggle = () => (revealed ? setRevealed(false) : requestReveal())
+  const hide = () => setRevealed(false)
   const closePrompt = () => { afterRevealRef.current = null; setPromptOpen(false) }
 
   const money = amount => (revealed ? formatPHP(amount) : MASKED_MONEY)
@@ -484,7 +491,7 @@ function useFinancialReveal(userEmail) {
     />
   )
 
-  return { revealed, toggle, requestReveal, money, moneyShort, percent, prompt }
+  return { revealed, toggle, hide, requestReveal, money, moneyShort, percent, prompt }
 }
 
 function FinancialRevealToggle({ revealed, onToggle }) {
@@ -967,8 +974,7 @@ function AddInventoryItemModal({ onClose, onAdd, initialKind = 'product', item }
 }
 
 // ─── Dashboard Screen ───────────────────────────────────────────────────────
-function Dashboard({ onNavigate, cart, userEmail }) {
-  const financials = useFinancialReveal(userEmail)
+function Dashboard({ onNavigate, cart, financials }) {
   const [sales, setSales] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -1144,7 +1150,6 @@ function Dashboard({ onNavigate, cart, userEmail }) {
           </div>
         </>
       )}
-      {financials.prompt}
     </div>
   )
 }
@@ -2959,7 +2964,7 @@ function EditTransactionModal({ sale, items: lineItems, onClose, onSave }) {
   )
 }
 
-function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTransaction }) {
+function Reports({ items, businessName, userEmail, financials, onVoidTransaction, onEditTransaction }) {
   const [sales, setSales] = useState([])
   const [saleItems, setSaleItems] = useState([])
   const [loading, setLoading] = useState(true)
@@ -2971,7 +2976,6 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
   const [reprintTarget, setReprintTarget] = useState(null)
   const [orderTypeFilter, setOrderTypeFilter] = useState('all')
   const [expandedCategory, setExpandedCategory] = useState(null)
-  const financials = useFinancialReveal(userEmail)
   // Transaction History day grouping: a day's expanded/collapsed state only
   // needs tracking once the user overrides the default (most recent day
   // open, the rest closed) — dayKey -> boolean.
@@ -3591,7 +3595,6 @@ function Reports({ items, businessName, userEmail, onVoidTransaction, onEditTran
       </Modal>
     )}
 
-    {financials.prompt}
     </>
   )
 }
@@ -3950,6 +3953,17 @@ export default function App() {
     }
   }, [settings])
 
+  const financials = useFinancialReveal(session?.user?.email)
+  const isInventoryStaff = session?.user?.app_metadata?.role === INVENTORY_STAFF_ROLE
+  // Never carry an unlock (or a screen) over to whoever signs in next.
+  useEffect(() => {
+    if (!session) {
+      financials.hide()
+      setScreen('dashboard')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session])
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
@@ -3974,9 +3988,37 @@ export default function App() {
       .finally(() => setItemsLoading(false))
   }
 
+  // Keyed on the user id, not the session object — the session is replaced
+  // on every token refresh and password re-check, which shouldn't refetch.
+  const sessionUserId = session?.user?.id
   useEffect(() => {
-    if (session) refetchItems()
-  }, [session])
+    if (sessionUserId) refetchItems()
+  }, [sessionUserId])
+
+  // Live stock sync: every products change (a sale, void, or edit on any
+  // device, recipe-driven ingredient deductions, Inventory edits) arrives
+  // here and patches just that one product in `items`, which Products,
+  // Checkout, and Inventory all render from. On a reconnect (e.g. wifi
+  // drop), events sent while disconnected are lost, so resync once then.
+  useEffect(() => {
+    if (!sessionUserId) return
+    let connectedBefore = false
+    const channel = supabase
+      .channel('products-live-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, payload => {
+        if (payload.eventType === 'DELETE') {
+          setItems(prev => prev.filter(p => p.id !== payload.old.id))
+        } else {
+          setItems(prev => api.applyProductChange(prev, payload.new))
+        }
+      })
+      .subscribe(status => {
+        if (status !== 'SUBSCRIBED') return
+        if (connectedBefore) api.fetchProducts().then(setItems).catch(() => {})
+        connectedBefore = true
+      })
+    return () => { supabase.removeChannel(channel) }
+  }, [sessionUserId])
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768)
@@ -3992,7 +4034,8 @@ export default function App() {
 
   const addItem = async newItem => {
     const created = await api.insertProduct(newItem)
-    setItems(prev => [...prev, created])
+    // The realtime INSERT for this same product may have landed first.
+    setItems(prev => prev.some(p => p.id === created.id) ? prev.map(p => p.id === created.id ? created : p) : [...prev, created])
   }
 
   const updateStock = async (id, stock) => {
@@ -4015,15 +4058,13 @@ export default function App() {
   const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType }) => {
     const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType })
     // Reflect the sold products' own stock decrement locally right away so
-    // Products/Inventory update without waiting on a round trip. A sale can
-    // also cascade into ingredient stock via each product's recipe (see
-    // applyRecipeStockDelta) — those deltas aren't known client-side, so
-    // refetch afterward to pick them up, same as void/edit do below.
+    // Products/Inventory update without waiting on a round trip. Ingredient
+    // stock cascaded through recipes (applyRecipeStockDelta) isn't known
+    // client-side — it arrives per product via the live sync above.
     setItems(prev => prev.map(p => {
       const sold = saleItems.find(i => i.id === p.id && !isOrderCharge(i))
       return sold ? { ...p, stock: Math.max(0, p.stock - sold.qty) } : p
     }))
-    refetchItems()
     return sale
   }
 
@@ -4035,21 +4076,17 @@ export default function App() {
       const taken = saleItems.find(i => i.id === p.id && !isOrderCharge(i))
       return taken ? { ...p, stock: Math.max(0, p.stock - taken.qty) } : p
     }))
-    refetchItems()
     return sale
   }
 
   // Void/edit both restore or re-deduct stock server-side per line item —
-  // simplest to just refetch products afterward rather than re-deriving the
-  // same per-product deltas a second time on the client.
+  // each changed product (and recipe ingredient) arrives via the live sync.
   const voidTransaction = async (saleId, voidedBy) => {
     await api.voidSale(saleId, voidedBy)
-    refetchItems()
   }
 
   const editTransaction = async (saleId, payload) => {
     await api.editSale(saleId, payload)
-    refetchItems()
   }
 
   // Standalone drawer open (change/shift counts) — no transaction, no
@@ -4125,9 +4162,15 @@ export default function App() {
     return <Login />
   }
 
+  // Inventory Staff always get Inventory, whatever `screen` holds — so no
+  // stray setScreen (a Dashboard shortcut, a stale state) can reach anything
+  // else. Everything below renders from activeScreen, never screen.
+  const activeScreen = isInventoryStaff ? 'inventory' : screen
+  const visibleNavItems = isInventoryStaff ? NAV_ITEMS.filter(n => n.id === 'inventory') : NAV_ITEMS
+
   const renderScreen = () => {
-    switch (screen) {
-      case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} userEmail={session?.user?.email} />
+    switch (activeScreen) {
+      case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} financials={financials} />
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
       case 'checkout': return <Checkout items={items} cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onUpdateAddOns={updateCartItemAddOns} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
       case 'staffOrder': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToStaffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} cart={staffCart} onNavigate={setScreen} checkoutScreen="staffOrderCheckout" isStaffMode />
@@ -4135,17 +4178,17 @@ export default function App() {
       case 'staffOrdersLog': return <StaffOrdersLog businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers businessName={settings.businessName} />
-      case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
+      case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} financials={financials} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
       case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} />
       default: return null
     }
   }
 
-  const navLabel = screen === 'staffOrder' || screen === 'staffOrderCheckout'
+  const navLabel = activeScreen === 'staffOrder' || activeScreen === 'staffOrderCheckout'
     ? 'Staff Order'
-    : screen === 'staffOrdersLog'
+    : activeScreen === 'staffOrdersLog'
       ? 'Staff Orders Log'
-      : NAV_ITEMS.find(n => n.id === screen)?.label || ''
+      : NAV_ITEMS.find(n => n.id === activeScreen)?.label || ''
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#fff9ea]">
@@ -4186,18 +4229,18 @@ export default function App() {
 
         {/* Nav */}
         <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
-          {NAV_ITEMS.map(item => (
+          {visibleNavItems.map(item => (
             <button
               key={item.id}
               onClick={() => setScreen(item.id)}
               className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
-                screen === item.id
+                activeScreen === item.id
                   ? 'bg-[#ddcca6] text-[#2c2416]'
                   : 'text-[#a8977e] hover:bg-white/5 hover:text-[#e8ddc8]'
               }`}
             >
               <div className="flex items-center gap-3">
-                <span className={screen === item.id ? 'text-[#2c2416]' : 'text-[#7a6a50]'}>
+                <span className={activeScreen === item.id ? 'text-[#2c2416]' : 'text-[#7a6a50]'}>
                   {NAV_ICONS[item.id]}
                 </span>
                 {item.label}
@@ -4212,6 +4255,7 @@ export default function App() {
 
           {/* Staff Order — password-gated before entry, kept out of NAV_ITEMS
               since it needs the password modal instead of a direct setScreen. */}
+          {!isInventoryStaff && (<>
           <button
             onClick={() => setShowStaffOrderPassword(true)}
             className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
@@ -4249,6 +4293,7 @@ export default function App() {
             </span>
             Staff Orders Log
           </button>
+          </>)}
         </nav>
 
         {/* Footer */}
@@ -4257,7 +4302,7 @@ export default function App() {
             <img src={dimpzCafeLogo} alt="Dimp'z Cafe" className="w-8 h-8 rounded-lg bg-white/90 object-contain p-0.5 shrink-0" />
             <div className="min-w-0">
               <p className="text-xs font-medium text-[#e8ddc8] truncate">{session.user.email}</p>
-              <p className="text-[10px] text-[#7a6a50]">Staff · Signed in</p>
+              <p className="text-[10px] text-[#7a6a50]">{isInventoryStaff ? 'Inventory Staff' : 'Staff'} · Signed in</p>
             </div>
           </div>
           <button
@@ -4284,6 +4329,7 @@ export default function App() {
             <h2 className="font-semibold text-[#2c2416] text-sm md:text-base">{navLabel}</h2>
           </div>
           <div className="flex items-center gap-3">
+            {!isInventoryStaff && (<>
             {/* Open cash drawer */}
             <button
               onClick={() => setShowDrawerPassword(true)}
@@ -4304,6 +4350,7 @@ export default function App() {
                 </span>
               )}
             </button>
+            </>)}
             {/* Time */}
             <div className="hidden sm:flex flex-col items-end">
               <span className="text-xs font-medium text-[#2c2416]">{clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -4315,6 +4362,7 @@ export default function App() {
         {/* Screen content */}
         <main className="flex-1 overflow-y-auto">
           {renderScreen()}
+          {financials.prompt}
           {/* Mobile bottom padding */}
           <div className="h-20 md:h-0" />
         </main>
@@ -4323,12 +4371,12 @@ export default function App() {
       {/* Mobile bottom navigation */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-white border-t border-[#f0e8d8] shadow-[0_-2px_12px_rgba(44,36,22,0.08)]">
         <div className="flex">
-          {NAV_ITEMS.slice(0, 5).map(item => (
+          {visibleNavItems.slice(0, 5).map(item => (
             <button
               key={item.id}
               onClick={() => setScreen(item.id)}
               className={`flex-1 flex flex-col items-center gap-1 py-3 relative transition-colors ${
-                screen === item.id ? 'text-[#2c2416]' : 'text-[#c4ae88]'
+                activeScreen === item.id ? 'text-[#2c2416]' : 'text-[#c4ae88]'
               }`}
             >
               <span className="relative">
@@ -4340,7 +4388,7 @@ export default function App() {
                 )}
               </span>
               <span className="text-[10px] font-medium">{item.label}</span>
-              {screen === item.id && (
+              {activeScreen === item.id && (
                 <span className="absolute top-0 left-1/2 -translate-x-1/2 w-6 h-0.5 bg-[#2c2416] rounded-full" />
               )}
             </button>
@@ -4348,7 +4396,7 @@ export default function App() {
         </div>
       </nav>
 
-      {showDrawerPassword && (
+      {showDrawerPassword && !isInventoryStaff && (
         <PasswordConfirmModal
           title="Open Cash Drawer"
           message="Re-enter your account password to open the drawer. This won't create a transaction or print a receipt."
@@ -4358,7 +4406,7 @@ export default function App() {
         />
       )}
 
-      {showStaffOrderPassword && (
+      {showStaffOrderPassword && !isInventoryStaff && (
         <PasswordConfirmModal
           title="Staff Order"
           message="Re-enter your account password to start a staff order. Items taken will deduct from stock but won't count toward sales revenue or reports."

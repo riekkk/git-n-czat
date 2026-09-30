@@ -34,6 +34,28 @@ function mapProductRow(row) {
   }
 }
 
+// UI field → products column, for applying a partial realtime row (below).
+const PRODUCT_FIELD_COLUMNS = {
+  name: 'name', price: 'price', category: 'category', stock: 'stock', image: 'emoji',
+  imageSize: 'image_size', costPrice: 'cost_price', description: 'description',
+  kind: 'kind', unit: 'unit', yieldPerUnit: 'yield_per_unit',
+}
+
+// Applies one realtime INSERT/UPDATE row to the in-memory product list,
+// touching only that product. Realtime can leave out large columns that
+// didn't change (the base64 photo in `emoji`), so an update only overwrites
+// fields actually present in the row — a stock change never blanks a photo.
+export function applyProductChange(products, row) {
+  const existing = products.find(p => p.id === row.id)
+  if (!existing) return [...products, mapProductRow(row)]
+  const mapped = mapProductRow(row)
+  const patch = {}
+  for (const [field, column] of Object.entries(PRODUCT_FIELD_COLUMNS)) {
+    if (row[column] !== undefined) patch[field] = mapped[field]
+  }
+  return products.map(p => (p.id === row.id ? { ...p, ...patch } : p))
+}
+
 export async function fetchProducts() {
   const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: true })
   if (error) throw error
