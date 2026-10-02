@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import dimpzCafeLogo from '@/imports/D.png'
+// 168px WebP rendition of D.png (shown at 28–56px, sharp up to 3x screens).
+// D.png stays as the source art; regenerate this from it if the logo changes.
+import dimpzCafeLogo from '@/imports/dimpz-logo.webp'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
 import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt } from '@/lib/printer'
@@ -83,7 +85,11 @@ function timeAgo(dateStr) {
 
 const CATEGORY_COLORS = ['#2c2416', '#ddcca6', '#c4ae88', '#e8ddc8', '#a8977e', '#7a6a50', '#b85c42', '#6b9e72']
 
-function resizeImageFile(file, maxDim = 400) {
+// Product photos are stored inline (base64 in products.emoji) and every
+// device downloads all of them on login, so keep each one small: 240px
+// covers the largest display (96px card) on 2–3x screens, and WebP keeps
+// transparency at a fraction of PNG's size (~10–15KB vs ~130KB).
+function resizeImageFile(file, maxDim = 240) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onerror = () => reject(reader.error)
@@ -105,10 +111,11 @@ function resizeImageFile(file, maxDim = 400) {
         canvas.width = width
         canvas.height = height
         const ctx = canvas.getContext('2d')
-        // PNG preserves the alpha channel — no background fill, so any
-        // transparency in the source survives the resize untouched.
+        // No background fill, so any transparency in the source survives.
         ctx.drawImage(img, 0, 0, width, height)
-        resolve(canvas.toDataURL('image/png'))
+        // Browsers that can't encode WebP (older Safari) silently return a
+        // PNG instead — still fine, just larger, and still transparent.
+        resolve(canvas.toDataURL('image/webp', 0.82))
       }
       img.src = reader.result
     }
