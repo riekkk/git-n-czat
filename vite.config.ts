@@ -24,6 +24,12 @@ export default defineConfig(({ mode }) => {
       figmaReactRefreshBoundaryFallback(),
       figmaMakeKitPlugin({ storiesGlob: '/src/**/*.stories.{ts,tsx,js,jsx}' }),
     ],
+    // Short commit id shown in the sidebar footer, so a device running a
+    // stale copy of the app (e.g. a long-lived in-app browser tab) is easy
+    // to spot. Vercel sets VERCEL_GIT_COMMIT_SHA at build time.
+    define: {
+      __APP_BUILD__: JSON.stringify((process.env.VERCEL_GIT_COMMIT_SHA || 'local').slice(0, 7)),
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),

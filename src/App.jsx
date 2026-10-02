@@ -3954,7 +3954,11 @@ export default function App() {
   }, [settings])
 
   const financials = useFinancialReveal(session?.user?.email)
+  // Supabase exposes the account's raw_app_meta_data as user.app_metadata.
   const isInventoryStaff = session?.user?.app_metadata?.role === INVENTORY_STAFF_ROLE
+  // Effects below key on the user id, not the session object — the session
+  // is replaced on every token refresh and password re-check.
+  const sessionUserId = session?.user?.id
   // Never carry an unlock (or a screen) over to whoever signs in next.
   useEffect(() => {
     if (!session) {
@@ -3979,6 +3983,37 @@ export default function App() {
     return () => clearInterval(interval)
   }, [])
 
+  // The saved session's role is only as fresh as its last token. Re-check
+  // the account against Supabase on load (and when the tab comes back into
+  // view); if the role changed since, refresh so both the UI and the token
+  // (which RLS checks) pick it up. Nothing renders until the first check
+  // finishes, so a stale session never flashes full access. If the check
+  // itself fails (offline), fall back to the saved session's role.
+  const [roleCheckedFor, setRoleCheckedFor] = useState(null)
+  useEffect(() => {
+    if (!sessionUserId) return
+    let cancelled = false
+    const verifyRole = async () => {
+      try {
+        const [{ data: userData }, { data: sessionData }] = await Promise.all([supabase.auth.getUser(), supabase.auth.getSession()])
+        const serverRole = userData?.user?.app_metadata?.role ?? null
+        const tokenRole = sessionData?.session?.user?.app_metadata?.role ?? null
+        if (userData?.user && serverRole !== tokenRole) await supabase.auth.refreshSession()
+      } catch {
+        // offline or transient — keep the saved session's role
+      } finally {
+        if (!cancelled) setRoleCheckedFor(sessionUserId)
+      }
+    }
+    verifyRole()
+    const onVisible = () => { if (document.visibilityState === 'visible') verifyRole() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [sessionUserId])
+
   const refetchItems = () => {
     setItemsLoading(true)
     setItemsError('')
@@ -3988,9 +4023,6 @@ export default function App() {
       .finally(() => setItemsLoading(false))
   }
 
-  // Keyed on the user id, not the session object — the session is replaced
-  // on every token refresh and password re-check, which shouldn't refetch.
-  const sessionUserId = session?.user?.id
   useEffect(() => {
     if (sessionUserId) refetchItems()
   }, [sessionUserId])
@@ -4150,7 +4182,7 @@ export default function App() {
   const cartCount = cart.reduce((s, i) => s + i.quantity, 0)
   const staffCartCount = staffCart.reduce((s, i) => s + i.quantity, 0)
 
-  if (session === undefined) {
+  if (session === undefined || (session && roleCheckedFor !== session.user.id)) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#fff9ea]">
         <Spinner />
@@ -4302,7 +4334,7 @@ export default function App() {
             <img src={dimpzCafeLogo} alt="Dimp'z Cafe" className="w-8 h-8 rounded-lg bg-white/90 object-contain p-0.5 shrink-0" />
             <div className="min-w-0">
               <p className="text-xs font-medium text-[#e8ddc8] truncate">{session.user.email}</p>
-              <p className="text-[10px] text-[#7a6a50]">{isInventoryStaff ? 'Inventory Staff' : 'Staff'} · Signed in</p>
+              <p className="text-[10px] text-[#7a6a50]">{isInventoryStaff ? 'Inventory Staff' : 'Staff'} · Signed in · v{__APP_BUILD__}</p>
             </div>
           </div>
           <button
