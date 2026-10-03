@@ -3172,6 +3172,33 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
     ? Array.from((itemsByCategory.get(expandedCategory) || new Map()).values()).sort((a, b) => b.qty - a.qty).slice(0, 5)
     : []
 
+  // Revenue by payment method — same exclusions as totalRevenue (activeSales:
+  // no voided, no staff orders, Dine In/Take Out toggle), plus the Transaction
+  // History date picker when one is set. Cash/GCash/Card always show (even at
+  // zero); any other stored method appears after them.
+  const saleDayKey = sale => {
+    const d = new Date(sale.created_at)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  const paymentScopeSales = dateFilter ? activeSales.filter(s => saleDayKey(s) === dateFilter) : activeSales
+  const paymentTotals = new Map(['cash', 'gcash', 'card'].map(m => [m, { method: m, revenue: 0, count: 0 }]))
+  paymentScopeSales.forEach(sale => {
+    const method = sale.payment_method || 'unknown'
+    if (!paymentTotals.has(method)) paymentTotals.set(method, { method, revenue: 0, count: 0 })
+    const entry = paymentTotals.get(method)
+    entry.revenue += sale.total
+    entry.count += 1
+  })
+  const paymentScopeRevenue = paymentScopeSales.reduce((sum, s) => sum + s.total, 0)
+  const paymentBreakdown = Array.from(paymentTotals.values()).map(p => ({
+    ...p,
+    pct: paymentScopeRevenue ? Math.round((p.revenue / paymentScopeRevenue) * 100) : 0,
+  }))
+  const paymentScopeLabel = [
+    dateFilter ? new Date(`${dateFilter}T00:00:00`).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : 'All time',
+    orderTypeLabel(orderTypeFilter),
+  ].filter(Boolean).join(' · ')
+
   // All-time transaction stats + COGS/profit — the new "Transaction Reports" header section
   const totalTransactionCount = activeSales.length
   const totalRevenue = activeSales.reduce((sum, s) => sum + s.total, 0)
@@ -3312,6 +3339,29 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
             No product cost data entered yet — Net Profit currently equals Total Sales. Add a Cost price to your products (Edit Product) for accurate COGS and margin.
           </p>
         )}
+      </div>
+
+      {/* Revenue by payment method */}
+      <div className="bg-white rounded-2xl p-5 md:p-6 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] mb-6">
+        <div className="flex items-baseline justify-between gap-3 flex-wrap mb-5">
+          <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">Revenue by Payment Method</h2>
+          <span className="text-xs text-[#a8977e]">{paymentScopeLabel} · excludes voided &amp; staff orders</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {paymentBreakdown.map((p, i) => (
+            <div key={p.method} className="rounded-xl bg-[#fffcf5] border border-[#f0e8d8] px-4 py-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e]">{paymentLabel(p.method)}</p>
+                <span className="text-xs font-semibold text-[#7a6a50]">{p.pct}%</span>
+              </div>
+              <p style={{ fontFamily: 'var(--font-serif)' }} className="text-xl font-bold text-[#2c2416]">{financials.money(p.revenue)}</p>
+              <p className="text-xs text-[#a8977e] mt-1">{p.count} transaction{p.count !== 1 ? 's' : ''}</p>
+              <div className="h-1.5 rounded-full bg-[#f5edd6] overflow-hidden mt-3">
+                <div className="h-full rounded-full" style={{ width: `${p.pct}%`, background: CATEGORY_COLORS[(i + 2) % CATEGORY_COLORS.length] }} />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
