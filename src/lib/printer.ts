@@ -6,7 +6,7 @@ import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from './categ
 import { LOGO_RASTER_BASE64 } from './receiptLogo'
 
 const PRINTNODE_API_KEY = import.meta.env.VITE_PRINTNODE_API_KEY
-const PRINTNODE_PRINTER_ID = 75810640
+const PRINTNODE_PRINTER_ID = 75880371
 const PRINTNODE_URL = 'https://api.printnode.com/printjobs'
 
 // 80mm paper, Font A — the standard 48-character width for this printer class.
