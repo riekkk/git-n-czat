@@ -2988,6 +2988,7 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
   // open, the rest closed) — dayKey -> boolean.
   const [dayOverrides, setDayOverrides] = useState(new Map())
   const [dateFilter, setDateFilter] = useState('')
+  const [paymentDaysShown, setPaymentDaysShown] = useState(7)
   const now = new Date()
 
   const load = () => {
@@ -3173,9 +3174,10 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
     : []
 
   // Revenue by payment method — same exclusions as totalRevenue (activeSales:
-  // no voided, no staff orders, Dine In/Take Out toggle), plus the Transaction
-  // History date picker when one is set. Cash/GCash/Card always show (even at
-  // zero); any other stored method appears after them.
+  // no voided, no staff orders, Dine In/Take Out toggle), plus the selected
+  // day (dateFilter — shared with the Transaction History date picker, and
+  // set by tapping a row in the day-by-day table). Cash/GCash/Card always
+  // show (even at zero); any other stored method appears after them.
   const saleDayKey = sale => {
     const d = new Date(sale.created_at)
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -3194,6 +3196,28 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
     ...p,
     pct: paymentScopeRevenue ? Math.round((p.revenue / paymentScopeRevenue) * 100) : 0,
   }))
+  // Day-by-day rows (newest first) with one column per payment method seen in
+  // any active sale, so every row lines up even on days a method wasn't used.
+  const paymentMethods = ['cash', 'gcash', 'card']
+  activeSales.forEach(s => {
+    const method = s.payment_method || 'unknown'
+    if (!paymentMethods.includes(method)) paymentMethods.push(method)
+  })
+  const paymentDaysMap = new Map()
+  activeSales.forEach(sale => {
+    const dayKey = saleDayKey(sale)
+    if (!paymentDaysMap.has(dayKey)) paymentDaysMap.set(dayKey, { dayKey, total: 0, count: 0, byMethod: {} })
+    const day = paymentDaysMap.get(dayKey)
+    const method = sale.payment_method || 'unknown'
+    const cell = day.byMethod[method] || (day.byMethod[method] = { revenue: 0, count: 0 })
+    cell.revenue += sale.total
+    cell.count += 1
+    day.total += sale.total
+    day.count += 1
+  })
+  const paymentDays = Array.from(paymentDaysMap.values()).sort((a, b) => (a.dayKey < b.dayKey ? 1 : -1))
+  const shortDayLabel = dayKey => new Date(`${dayKey}T00:00:00`).toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' })
+
   const paymentScopeLabel = [
     dateFilter ? new Date(`${dateFilter}T00:00:00`).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : 'All time',
     orderTypeLabel(orderTypeFilter),
@@ -3345,7 +3369,14 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
       <div className="bg-white rounded-2xl p-5 md:p-6 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] mb-6">
         <div className="flex items-baseline justify-between gap-3 flex-wrap mb-5">
           <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-lg font-semibold text-[#2c2416]">Revenue by Payment Method</h2>
-          <span className="text-xs text-[#a8977e]">{paymentScopeLabel} · excludes voided &amp; staff orders</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-[#a8977e]">{paymentScopeLabel} · excludes voided &amp; staff orders</span>
+            {dateFilter && (
+              <button onClick={() => setDateFilter('')} className="text-xs font-medium px-2.5 py-1 rounded-full border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]">
+                Show all time
+              </button>
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {paymentBreakdown.map((p, i) => (
@@ -3362,6 +3393,58 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
             </div>
           ))}
         </div>
+
+        {/* Day by day — tap a row to show that day in the cards above (and
+            in Transaction History, which shares the same date filter). */}
+        {paymentDays.length > 0 && (
+          <div className="mt-5">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-2">Day by day · tap a day to view it above</p>
+            <div className="overflow-x-auto -mx-1 px-1">
+              <table className="w-full text-xs min-w-[420px]">
+                <thead>
+                  <tr className="text-left text-[#a8977e]">
+                    <th className="font-medium py-2 pr-2">Date</th>
+                    {paymentMethods.map(m => <th key={m} className="font-medium py-2 px-2 text-right">{paymentLabel(m)}</th>)}
+                    <th className="font-medium py-2 pl-2 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paymentDays.slice(0, paymentDaysShown).map(day => {
+                    const selected = dateFilter === day.dayKey
+                    return (
+                      <tr
+                        key={day.dayKey}
+                        onClick={() => setDateFilter(selected ? '' : day.dayKey)}
+                        className={`border-t border-[#f5edd6] cursor-pointer transition-colors ${selected ? 'bg-[#fff3d6]' : 'hover:bg-[#fffcf5]'}`}
+                      >
+                        <td className="py-2 pr-2 font-medium text-[#2c2416] whitespace-nowrap">{shortDayLabel(day.dayKey)}</td>
+                        {paymentMethods.map(m => {
+                          const cell = day.byMethod[m]
+                          return (
+                            <td key={m} className="py-2 px-2 text-right whitespace-nowrap">
+                              {cell ? (
+                                <>
+                                  <span className="text-[#2c2416]">{financials.money(cell.revenue)}</span>
+                                  <span className="text-[#a8977e]"> · {cell.count}</span>
+                                </>
+                              ) : <span className="text-[#d8c9a8]">—</span>}
+                            </td>
+                          )
+                        })}
+                        <td className="py-2 pl-2 text-right font-semibold text-[#2c2416] whitespace-nowrap">{financials.money(day.total)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {paymentDays.length > paymentDaysShown && (
+              <button onClick={() => setPaymentDaysShown(n => n + 14)} className="mt-2 text-xs font-medium text-[#7a6a50] hover:text-[#2c2416]">
+                Show more days ({paymentDays.length - paymentDaysShown} more)
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
