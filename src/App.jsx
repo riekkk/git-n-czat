@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import dimpzCafeLogo from '@/imports/dimpz-logo.webp'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
-import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt } from '@/lib/printer'
+import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt, PRINT_STATIONS } from '@/lib/printer'
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
 import * as XLSX from 'xlsx'
@@ -3914,7 +3914,91 @@ function StaffOrdersLog({ businessName, userEmail, onVoidTransaction }) {
 }
 
 // ─── Settings Screen ──────────────────────────────────────────────────────────
-function Settings({ settings, onUpdateSettings }) {
+// ─── Print Station (Settings) — which PrintNode printer every device prints
+// to. Stored in app_settings, so a switch here reaches all devices at once
+// (printer.ts reads it before each job); this card also listens over
+// realtime so it shows a switch made from another device. Changing it
+// re-verifies the account password, same as Void/Edit/Cash Drawer.
+function PrintStationCard({ userEmail }) {
+  const [station, setStation] = useState(undefined) // undefined = loading, null = never set
+  const [loadError, setLoadError] = useState('')
+  const [pending, setPending] = useState(null)
+
+  useEffect(() => {
+    const load = () => api.fetchPrintStation().then(s => { setStation(s); setLoadError('') }).catch(err => setLoadError(err.message || 'Could not load print station'))
+    load()
+    const channel = supabase
+      .channel('print-station-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, load)
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [])
+
+  const handleConfirm = async password => {
+    await verifyStaffPassword(userEmail, password)
+    await api.savePrintStation({ printerId: pending.printerId, label: pending.label }, userEmail)
+    setStation(await api.fetchPrintStation())
+    setPending(null)
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden">
+      <div className="px-5 py-4 border-b border-[#f5edd6] bg-[#fffcf5]">
+        <h2 className="font-semibold text-[#2c2416] text-sm">Print Station</h2>
+        <p className="text-xs text-[#a8977e] mt-0.5">Where every device sends receipts, reprints, staff-order slips and the cash drawer kick.</p>
+      </div>
+      <div className="p-5 space-y-3">
+        {loadError && <p className="text-xs text-[#b85c42]">{loadError}</p>}
+        {station === undefined && !loadError ? (
+          <p className="text-sm text-[#a8977e]">Loading…</p>
+        ) : (
+          PRINT_STATIONS.map(option => {
+            const active = station?.printerId === option.printerId
+            return (
+              <button
+                key={option.printerId}
+                type="button"
+                disabled={active}
+                onClick={() => setPending(option)}
+                className={`w-full flex items-center justify-between gap-3 text-left px-4 py-3 rounded-xl border transition-all ${
+                  active ? 'border-[#2c2416] bg-[#fff9ea]' : 'border-[#e8ddc8] hover:border-[#ddcca6]'
+                }`}
+              >
+                <div>
+                  <p className="text-sm font-medium text-[#2c2416]">{option.label}</p>
+                  <p className="text-xs text-[#a8977e]">{option.printerName} · ID {option.printerId}</p>
+                </div>
+                {active
+                  ? <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-[#2c2416] text-[#ddcca6] shrink-0">Active</span>
+                  : <span className="text-xs font-medium text-[#7a6a50] shrink-0">Switch</span>}
+              </button>
+            )
+          })
+        )}
+        {station && !PRINT_STATIONS.some(o => o.printerId === station.printerId) && (
+          <p className="text-xs text-[#b85c42]">Active printer ID {station.printerId} isn't one of the stations above.</p>
+        )}
+        {station === null && <p className="text-xs text-[#b85c42]">No print station is set — printing won't work until one is chosen.</p>}
+        {station?.updatedAt && (
+          <p className="text-[11px] text-[#a8977e]">
+            Last changed {new Date(station.updatedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}{station.updatedBy ? ` by ${station.updatedBy}` : ''}
+          </p>
+        )}
+      </div>
+      {pending && (
+        <PasswordConfirmModal
+          title={`Switch to ${pending.label}?`}
+          message={`All devices will print to ${pending.label} (${pending.printerName}, ID ${pending.printerId}) from the next receipt on. Make sure PrintNode is running on that computer. Re-enter your account password to confirm.`}
+          confirmLabel="Switch Print Station"
+          onConfirm={handleConfirm}
+          onClose={() => setPending(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function Settings({ settings, onUpdateSettings, userEmail }) {
   const toggle = key => {
     onUpdateSettings(s => ({ ...s, [key]: !s[key] }))
   }
@@ -3933,6 +4017,8 @@ function Settings({ settings, onUpdateSettings }) {
       <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416] mb-6">Settings</h1>
 
       <div className="space-y-4">
+        <PrintStationCard userEmail={userEmail} />
+
         {/* Business info */}
         <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden">
           <div className="px-5 py-4 border-b border-[#f5edd6] bg-[#fffcf5]">
@@ -4351,7 +4437,7 @@ export default function App() {
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers businessName={settings.businessName} />
       case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} financials={financials} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
-      case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} />
+      case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} userEmail={session?.user?.email} />
       default: return null
     }
   }

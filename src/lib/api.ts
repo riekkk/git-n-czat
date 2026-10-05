@@ -490,3 +490,25 @@ export async function editSale(saleId, { items, paymentMethod, amountReceived, c
     throw new Error('Transaction was not updated — you may not have permission')
   }
 }
+
+// Print Station — the PrintNode printer every device prints to, stored in
+// app_settings so a switch reaches all devices at once (see printer.ts,
+// which reads it before every job). Returns { printerId, label, updatedAt,
+// updatedBy } or null if it has never been set.
+export async function fetchPrintStation(signal?: AbortSignal) {
+  let query = supabase.from('app_settings').select('value, updated_at, updated_by').eq('key', 'print_station') as any
+  if (signal) query = query.abortSignal(signal)
+  const { data, error } = await query.maybeSingle()
+  if (error) throw error
+  if (!data) return null
+  return { printerId: Number(data.value?.printerId), label: data.value?.label || '', updatedAt: data.updated_at, updatedBy: data.updated_by }
+}
+
+export async function savePrintStation({ printerId, label }, updatedBy) {
+  const { data, error } = await supabase
+    .from('app_settings')
+    .upsert({ key: 'print_station', value: { printerId, label }, updated_at: new Date().toISOString(), updated_by: updatedBy || null })
+    .select('key')
+  if (error) throw error
+  if (!data || data.length === 0) throw new Error('Print station was not saved — you may not have permission')
+}

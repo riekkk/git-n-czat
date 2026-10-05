@@ -4,10 +4,38 @@
 // etc.) trigger a print on the same registered printer.
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from './categories'
 import { LOGO_RASTER_BASE64 } from './receiptLogo'
+import { fetchPrintStation } from './api'
 
 const PRINTNODE_API_KEY = import.meta.env.VITE_PRINTNODE_API_KEY
-const PRINTNODE_PRINTER_ID = 75880371
 const PRINTNODE_URL = 'https://api.printnode.com/printjobs'
+
+// The computers a receipt printer is registered on in PrintNode. Which one
+// is active is NOT set here: it's the 'print_station' row in app_settings
+// (chosen in Settings → Print Station), read before every print job by
+// resolvePrinterId — the single source of truth for all print paths.
+export const PRINT_STATIONS = [
+  { label: 'MacBook', printerName: 'Dimpz_Cafe_Printer', printerId: 75810640 },
+  { label: 'Huawei laptop', printerName: 'xprinter - dimpz cafe', printerId: 75880371 },
+]
+
+// Last station read successfully, used only if a fresh read fails (e.g. a
+// brief network blip right after a sale) so the receipt still prints to
+// the station this device last knew about rather than not at all.
+let lastKnownPrinterId: number | null = null
+
+async function resolvePrinterId(): Promise<number> {
+  try {
+    const station = await fetchPrintStation(AbortSignal.timeout(5000))
+    if (station?.printerId) {
+      lastKnownPrinterId = station.printerId
+      return station.printerId
+    }
+  } catch {
+    // fall through to the last known station
+  }
+  if (lastKnownPrinterId) return lastKnownPrinterId
+  throw new Error('No print station is set — choose one in Settings → Print Station.')
+}
 
 // 80mm paper, Font A — the standard 48-character width for this printer class.
 const RECEIPT_WIDTH = 48
@@ -349,6 +377,8 @@ async function sendToPrinter(raw: string, title: string, source?: string): Promi
     throw new Error('Printing is not configured — missing VITE_PRINTNODE_API_KEY.')
   }
 
+  const printerId = await resolvePrinterId()
+
   let response: Response
   try {
     response = await fetch(PRINTNODE_URL, {
@@ -358,7 +388,7 @@ async function sendToPrinter(raw: string, title: string, source?: string): Promi
         Authorization: `Basic ${btoa(`${PRINTNODE_API_KEY}:`)}`,
       },
       body: JSON.stringify({
-        printerId: PRINTNODE_PRINTER_ID,
+        printerId,
         title,
         contentType: 'raw_base64',
         content: toBase64(raw),
