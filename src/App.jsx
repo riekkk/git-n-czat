@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import dimpzCafeLogo from '@/imports/dimpz-logo.webp'
 import { supabase } from '@/lib/supabase'
 import * as api from '@/lib/api'
-import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt, PRINT_STATIONS } from '@/lib/printer'
+import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt, PRINT_STATIONS, onPrintProblem, getPrintStationStatus } from '@/lib/printer'
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
 import { countsTowardReports, isVoidedSale, linesOfSales } from '@/lib/salesFilters'
@@ -591,6 +591,9 @@ function ReprintButtons({ order, items, businessName }) {
   const handleReprint = async copyType => {
     setReprintingType(copyType)
     setError('')
+    // One id per press (buttons are disabled while it's in flight), so a
+    // double-submit can't print twice but a later reprint still can.
+    const requestId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
     try {
       await reprintReceipt({
         id: order.id,
@@ -605,7 +608,7 @@ function ReprintButtons({ order, items, businessName }) {
         orderType: order.order_type,
         isStaffOrder: order.is_staff_order,
         businessName,
-      }, copyType)
+      }, copyType, requestId)
     } catch (err) {
       setError(err.message || 'Could not reprint')
     } finally {
@@ -1740,7 +1743,10 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
     setPrintingThermal(true)
     setThermalPrintError('')
     try {
-      await printReceipt({
+      // Resolves once submitted; `printed` settles when PrintNode reports
+      // the outcome. A failure there is announced app-wide (onPrintProblem),
+      // so it still reaches the cashier after they've started a new order.
+      const { printed } = await printReceipt({
         id: completedSale.id,
         createdAt: completedSale.createdAt,
         customerName: completedSale.customerName,
@@ -1753,6 +1759,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
         orderType: completedSale.orderType,
         businessName,
       })
+      await printed
     } catch (err) {
       setThermalPrintError(err.message || 'Could not print receipt')
     } finally {
@@ -2083,7 +2090,7 @@ function StaffOrderCheckout({ cart, onUpdateQty, onRemove, onClearCart, onCharge
     setPrintingThermal(true)
     setThermalPrintError('')
     try {
-      await printStaffOrderReceipt({
+      const { printed } = await printStaffOrderReceipt({
         id: completedOrder.id,
         createdAt: completedOrder.createdAt,
         customerName: completedOrder.staffName,
@@ -2092,6 +2099,7 @@ function StaffOrderCheckout({ cart, onUpdateQty, onRemove, onClearCart, onCharge
         total: completedOrder.total,
         businessName,
       })
+      await printed
     } catch (err) {
       setThermalPrintError(err.message || 'Could not print receipt')
     } finally {
@@ -4149,6 +4157,69 @@ function Login() {
 }
 
 // ─── Root App ─────────────────────────────────────────────────────────────────
+// ─── Print Station status (header) — green when the active station's
+// computer is Connected in PrintNode, red when it isn't, so staff see a
+// printing problem before taking orders. Rechecked every 30s, when the tab
+// comes back into view, and when the station is switched in Settings.
+function PrintStationIndicator() {
+  const [status, setStatus] = useState(null) // null = checking
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const check = () => getPrintStationStatus()
+      .then(s => { if (!cancelled) { setStatus(s); setError(false) } })
+      .catch(() => { if (!cancelled) setError(true) })
+    check()
+    const interval = setInterval(check, 30000)
+    const onVisible = () => { if (document.visibilityState === 'visible') check() }
+    document.addEventListener('visibilitychange', onVisible)
+    const channel = supabase
+      .channel('print-station-indicator')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, check)
+      .subscribe()
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+      supabase.removeChannel(channel)
+    }
+  }, [])
+
+  const connected = !error && status?.connected
+  const label = error ? "Can't check printer" : !status ? 'Checking printer…' : `${status.label} · ${connected ? 'Connected' : 'Not connected'}`
+  return (
+    <div
+      title={connected ? 'Receipts will print now.' : 'Receipts will NOT print until the print station computer is online with PrintNode running.'}
+      className={`flex items-center gap-1.5 px-2.5 h-9 rounded-xl border text-xs font-medium ${
+        !status && !error ? 'border-[#e8ddc8] text-[#a8977e]'
+          : connected ? 'border-[#cfe5d1] bg-[#f0faf0] text-[#4f8a57]' : 'border-[#f3c9bd] bg-[#fdf0ec] text-[#b85c42]'
+      }`}
+    >
+      <span className={`w-2 h-2 rounded-full ${!status && !error ? 'bg-[#d8c9a8]' : connected ? 'bg-[#4f8a57]' : 'bg-[#b85c42]'}`} />
+      <span className="hidden sm:inline">{label}</span>
+    </div>
+  )
+}
+
+// App-wide print problem notices (see onPrintProblem in printer.ts) —
+// background print checks often finish after the cashier has moved on.
+function PrintProblemNotices() {
+  const [problems, setProblems] = useState([])
+  useEffect(() => onPrintProblem(p => setProblems(prev => [...prev, p])), [])
+  if (problems.length === 0) return null
+  return (
+    <div className="fixed top-16 right-4 left-4 sm:left-auto z-50 space-y-2 sm:w-96">
+      {problems.map(p => (
+        <div key={p.id} role="alert" className="flex items-start gap-3 bg-[#fdf0ec] border border-[#f3c9bd] text-[#8a3d29] rounded-xl px-4 py-3 shadow-lg">
+          <p className="text-sm flex-1">{p.message}</p>
+          <button onClick={() => setProblems(prev => prev.filter(x => x.id !== p.id))} className="text-[#b85c42] shrink-0" title="Dismiss"><IconX /></button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function App() {
   const [session, setSession] = useState(undefined) // undefined = checking, null = signed out
   const [screen, setScreen] = useState('dashboard')
@@ -4588,6 +4659,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-3">
             {!isInventoryStaff && (<>
+            <PrintStationIndicator />
             {/* Open cash drawer */}
             <button
               onClick={() => setShowDrawerPassword(true)}
@@ -4621,6 +4693,7 @@ export default function App() {
         <main className="flex-1 overflow-y-auto">
           {renderScreen()}
           {financials.prompt}
+          {!isInventoryStaff && <PrintProblemNotices />}
           {/* Mobile bottom padding */}
           <div className="h-20 md:h-0" />
         </main>
