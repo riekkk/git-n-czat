@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { isOrderCharge } from './categories'
+import { countsTowardReports } from './salesFilters'
 
 const LOW_STOCK_THRESHOLD = 15
 
@@ -263,14 +264,14 @@ export async function fetchRecentSales(daysBack = 7) {
 
   const { data, error } = await supabase
     .from('sales')
-    .select('id, customer_name, total, created_at, sale_items(product_name, quantity)')
+    .select('id, customer_name, total, created_at, status, is_staff_order, sale_items(product_name, quantity)')
     .gte('created_at', start.toISOString())
-    .neq('status', 'voided')
-    .eq('is_staff_order', false)
     .order('created_at', { ascending: false })
   if (error) throw error
 
-  return data.map(sale => ({
+  // Filtered here with the shared rule rather than in the query, so the
+  // Dashboard can never disagree with Reports about what counts.
+  return data.filter(countsTowardReports).map(sale => ({
     id: sale.id,
     customer_name: sale.customer_name,
     total: Number(sale.total),
@@ -362,10 +363,28 @@ export async function fetchAllSaleItemsWithCategory() {
   }))
 }
 
-// Reports: reverses a completed sale — restores stock for each line item and
-// marks the sale voided (kept for audit, excluded from revenue/analytics)
-// rather than deleting it.
+// Reports: reverses a completed sale — marks it voided (kept for audit,
+// excluded from revenue/analytics) and restores stock for each line item.
+//
+// The sale is marked voided FIRST, and only if it isn't already: if two
+// devices void the same sale, or a void is retried after an error, only the
+// one that flips the status restores stock — never twice. (Restoring first
+// meant a failure partway left the sale still counted in every report,
+// with its stock already put back, and a retry restored it again.)
 export async function voidSale(saleId, voidedBy) {
+  const { data: marked, error: markError } = await supabase
+    .from('sales')
+    .update({ status: 'voided', voided_at: new Date().toISOString(), voided_by: voidedBy })
+    .eq('id', saleId)
+    .neq('status', 'voided')
+    .select('id')
+  if (markError) throw markError
+  if (!marked || marked.length === 0) {
+    const { data: current } = await supabase.from('sales').select('status').eq('id', saleId).maybeSingle()
+    if (current?.status === 'voided') throw new Error('This transaction is already voided.')
+    throw new Error('Transaction was not voided — you may not have permission')
+  }
+
   const { data: lineItems, error: itemsError } = await supabase
     .from('sale_items')
     .select('product_id, product_name, quantity, add_ons')
@@ -389,22 +408,18 @@ export async function voidSale(saleId, voidedBy) {
     await applyRecipeStockDelta(productId, qty)
   }
 
-  for (const item of lineItems) {
-    if (isOrderCharge({ name: item.product_name })) continue // never deducted, so nothing to restore
-    if (item.product_id) await restoreStock(item.product_id, item.quantity)
-    for (const addOn of item.add_ons || []) {
-      if (addOn.productId) await restoreStock(addOn.productId, item.quantity)
+  try {
+    for (const item of lineItems) {
+      if (isOrderCharge({ name: item.product_name })) continue // never deducted, so nothing to restore
+      if (item.product_id) await restoreStock(item.product_id, item.quantity)
+      for (const addOn of item.add_ons || []) {
+        if (addOn.productId) await restoreStock(addOn.productId, item.quantity)
+      }
     }
-  }
-
-  const { data, error } = await supabase
-    .from('sales')
-    .update({ status: 'voided', voided_at: new Date().toISOString(), voided_by: voidedBy })
-    .eq('id', saleId)
-    .select('id')
-  if (error) throw error
-  if (!data || data.length === 0) {
-    throw new Error('Transaction was not voided — you may not have permission')
+  } catch (err) {
+    // Supabase returns plain { message } objects, not Error instances.
+    const detail = (err as { message?: string })?.message || String(err)
+    throw new Error(`The sale was voided, but restoring its stock didn't finish — check Inventory counts for its items. (${detail})`)
   }
 }
 

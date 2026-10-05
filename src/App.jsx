@@ -7,6 +7,7 @@ import * as api from '@/lib/api'
 import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt, PRINT_STATIONS } from '@/lib/printer'
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
+import { countsTowardReports, isVoidedSale, linesOfSales } from '@/lib/salesFilters'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -2580,7 +2581,7 @@ function Customers({ businessName }) {
     if (!salesByKey.has(key)) salesByKey.set(key, [])
     salesByKey.get(key).push(sale)
 
-    if (sale.status === 'voided') return
+    if (!countsTowardReports(sale)) return
     const entry = customerMap.get(key) || { key, name: displayName, orders: 0, totalSpent: 0, lastOrderAt: sale.created_at }
     entry.orders += 1
     entry.totalSpent += sale.total
@@ -2681,7 +2682,7 @@ function Customers({ businessName }) {
           ) : (
             <div className="space-y-3 max-h-[50vh] overflow-y-auto">
               {selectedOrders.map(order => {
-                const isVoided = order.status === 'voided'
+                const isVoided = isVoidedSale(order)
                 const orderItems = itemsBySale.get(order.id) || []
                 return (
                   <div key={order.id} className={`border border-[#f0e8d8] rounded-xl p-4 ${isVoided ? 'opacity-60' : ''}`}>
@@ -3031,9 +3032,8 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
   // Products, Category Breakdown) reflects the same filter as the
   // transaction list below it, not just the list.
   const orderTypeMatches = s => orderTypeFilter === 'all' || s.order_type === orderTypeFilter
-  const excludedSaleIds = new Set(sales.filter(s => s.status === 'voided' || s.is_staff_order || !orderTypeMatches(s)).map(s => s.id))
-  const activeSales = sales.filter(s => s.status !== 'voided' && !s.is_staff_order && orderTypeMatches(s))
-  const activeSaleItems = saleItems.filter(i => !excludedSaleIds.has(i.saleId))
+  const activeSales = sales.filter(s => countsTowardReports(s) && orderTypeMatches(s))
+  const activeSaleItems = linesOfSales(saleItems, activeSales)
 
   const itemsBySale = new Map()
   saleItems.forEach(item => {
@@ -3064,9 +3064,9 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
     label: new Date(`${dayKey}T00:00:00`).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }),
     sales: daySales,
     count: daySales.length,
-    // Same exclusions as totalRevenue above: voided and (already, via
-    // transactionList) staff orders don't count toward revenue.
-    revenue: daySales.filter(s => s.status !== 'voided').reduce((sum, s) => sum + s.total, 0),
+    // Same rule as totalRevenue above (voided and staff orders never count);
+    // the day still lists its voided sales, marked VOIDED.
+    revenue: daySales.filter(countsTowardReports).reduce((sum, s) => sum + s.total, 0),
   }))
   const visibleDayGroups = dateFilter ? dayGroups.filter(g => g.dayKey === dateFilter) : dayGroups
   const isDayExpanded = (dayKey, index) => dayOverrides.has(dayKey) ? dayOverrides.get(dayKey) : index === 0
@@ -3638,7 +3638,7 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
                   {expanded && (
                     <div className="divide-y divide-[#f5edd6]">
                       {group.sales.map(sale => {
-                        const isVoided = sale.status === 'voided'
+                        const isVoided = isVoidedSale(sale)
                         const saleLineItems = itemsBySale.get(sale.id) || []
                         const itemCount = saleLineItems.filter(i => !isOrderCharge(i)).reduce((sum, i) => sum + i.qty, 0)
                         return (
@@ -3789,7 +3789,7 @@ function StaffOrdersLog({ businessName, userEmail, onVoidTransaction }) {
   })
 
   const staffOrders = sales.filter(s => s.is_staff_order).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-  const activeStaffOrders = staffOrders.filter(s => s.status !== 'voided')
+  const activeStaffOrders = staffOrders.filter(s => !isVoidedSale(s))
   const totalItemsTaken = activeStaffOrders.reduce((sum, s) => sum + (itemsBySale.get(s.id) || []).reduce((n, i) => n + i.qty, 0), 0)
   const totalValueTaken = activeStaffOrders.reduce((sum, s) => sum + s.total, 0)
 
@@ -3858,7 +3858,7 @@ function StaffOrdersLog({ businessName, userEmail, onVoidTransaction }) {
         ) : (
           <div className="divide-y divide-[#f5edd6]">
             {staffOrders.map(sale => {
-              const isVoided = sale.status === 'voided'
+              const isVoided = isVoidedSale(sale)
               const saleLineItems = itemsBySale.get(sale.id) || []
               return (
                 <div key={sale.id} className={`flex items-start justify-between gap-4 px-5 py-4 ${isVoided ? 'opacity-50' : ''}`}>
