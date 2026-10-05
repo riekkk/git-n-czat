@@ -8,6 +8,8 @@ import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt, P
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
 import { countsTowardReports, isVoidedSale, linesOfSales } from '@/lib/salesFilters'
+import { buildLivePayload, publishLiveOrder, newOrderKey, isRegisterDevice, setRegisterDevice, IDLE_PAYLOAD, LIVE_ORDER_HEARTBEAT_MS } from '@/lib/liveOrder'
+import CustomerDisplay from '@/CustomerDisplay'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -32,6 +34,10 @@ const NAV_ITEMS = [
 // Inventory for them regardless of `screen`, and in the database by RLS on
 // sales/sale_items/drawer_openings (see the inventory_staff_role migration).
 const INVENTORY_STAFF_ROLE = 'inventory_staff'
+// Customer Display (iPad facing the customer): renders ONLY CustomerDisplay,
+// never the POS — enforced the same way as Inventory Staff, here and by RLS
+// (the customer_display migration gives it the live_order row and nothing else).
+const CUSTOMER_DISPLAY_ROLE = 'customer_display'
 
 const SETTINGS_STORAGE_KEY = 'dimpzcafe-settings'
 const DEFAULT_SETTINGS = {
@@ -1665,7 +1671,7 @@ function AddOnPicker({ available, selected, onToggle, onAddCustom, onClose }) {
 }
 
 // ─── Checkout Screen ──────────────────────────────────────────────────────────
-function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAddOns, onClearCart, onCharge, businessName, onNavigate }) {
+function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAddOns, onClearCart, onCharge, businessName, onNavigate, onLiveDetails, onLivePaid, onLiveReceipt, onLiveReset }) {
   const [customerName, setCustomerName] = useState('')
   const [orderType, setOrderType] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('card')
@@ -1703,6 +1709,12 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
   const change = amountReceivedNum - total
   const cashInsufficient = paymentMethod === 'cash' && (amountReceived === '' || amountReceivedNum < total)
 
+  // Customer Display: order type and cash tendered as they're entered.
+  useEffect(() => {
+    onLiveDetails?.({ orderType, paymentMethod, amountReceived })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderType, paymentMethod, amountReceived])
+
   const handleCharge = async () => {
     if (cashInsufficient || !orderType) return
     setCharging(true)
@@ -1731,6 +1743,12 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
         orderType,
       })
       setPaid(true)
+      // Hand the paid order to the Customer Display ("Thank you!"), then
+      // empty the cart now rather than at "New Order", so nothing from this
+      // customer can carry into the next order. The paid screen below reads
+      // completedSale, not the cart.
+      onLivePaid?.(sale?.id)
+      onClearCart()
     } catch (err) {
       setChargeError(err.message || 'Payment could not be recorded — try again')
     } finally {
@@ -1759,9 +1777,10 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
         orderType: completedSale.orderType,
         businessName,
       })
-      await printed
+      onLiveReceipt?.(completedSale.id, (await printed) ? 'printed' : 'failed')
     } catch (err) {
       setThermalPrintError(err.message || 'Could not print receipt')
+      onLiveReceipt?.(completedSale.id, 'failed')
     } finally {
       setPrintingThermal(false)
     }
@@ -1787,7 +1806,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
       <div className="flex flex-col items-center justify-center min-h-[60vh] p-8 text-center">
         <div className="w-20 h-20 rounded-full bg-[#f0faf0] flex items-center justify-center text-4xl mb-5">✓</div>
         <h2 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416] mb-2">Payment Successful</h2>
-        <p className="text-[#a8977e] mb-1">Total charged: <strong className="text-[#2c2416]">{formatPHP(total)}</strong></p>
+        <p className="text-[#a8977e] mb-1">Total charged: <strong className="text-[#2c2416]">{formatPHP(completedSale?.total ?? total)}</strong></p>
         <p className="text-[#a8977e] mb-1">Customer: <strong className="text-[#2c2416]">{customerName.trim() || 'Walk-in'}</strong></p>
         <p className="text-sm text-[#a8977e] mb-8">
           via {paymentMethod === 'card' ? 'Credit/Debit Card' : paymentMethod === 'cash' ? 'Cash' : 'GCash'}
@@ -1809,7 +1828,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
             {printingThermal ? 'Printing…' : 'Print Thermal Receipt'}
           </button>
           <button
-            onClick={() => { onClearCart(); setPaid(false); setCustomerName(''); setOrderType(''); setCompletedSale(null); onNavigate('products') }}
+            onClick={() => { onClearCart(); onLiveReset?.(); setPaid(false); setCustomerName(''); setOrderType(''); setAmountReceived(''); setCompletedSale(null); onNavigate('products') }}
             className="px-8 py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-medium hover:bg-[#3d3220] transition-colors"
           >
             New Order
@@ -4006,7 +4025,32 @@ function PrintStationCard({ userEmail }) {
   )
 }
 
-function Settings({ settings, onUpdateSettings, userEmail }) {
+// ─── Customer Display (Settings) — per-device switch. Only the register's
+// cart should reach the iPad; any other device (a phone open on Reports)
+// would otherwise overwrite it with an empty cart.
+function CustomerDisplayCard({ isRegister, onChange }) {
+  return (
+    <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden">
+      <div className="px-5 py-4 border-b border-[#f5edd6] bg-[#fffcf5]">
+        <h2 className="font-semibold text-[#2c2416] text-sm">Customer Display</h2>
+      </div>
+      <div className="flex items-center justify-between gap-4 px-5 py-4">
+        <div>
+          <p className="text-sm font-medium text-[#2c2416]">This device is the register</p>
+          <p className="text-xs text-[#a8977e]">Show this device's cart and total on the customer-facing iPad. Turn on for one device only.</p>
+        </div>
+        <button
+          onClick={() => onChange(!isRegister)}
+          className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${isRegister ? 'bg-[#2c2416]' : 'bg-[#e8ddc8]'}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${isRegister ? 'translate-x-5' : 'translate-x-0'}`} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function Settings({ settings, onUpdateSettings, userEmail, isRegister, onSetRegister }) {
   const toggle = key => {
     onUpdateSettings(s => ({ ...s, [key]: !s[key] }))
   }
@@ -4026,6 +4070,7 @@ function Settings({ settings, onUpdateSettings, userEmail }) {
 
       <div className="space-y-4">
         <PrintStationCard userEmail={userEmail} />
+        <CustomerDisplayCard isRegister={isRegister} onChange={onSetRegister} />
 
         {/* Business info */}
         <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden">
@@ -4253,6 +4298,7 @@ export default function App() {
   const financials = useFinancialReveal(session?.user?.email)
   // Supabase exposes the account's raw_app_meta_data as user.app_metadata.
   const isInventoryStaff = session?.user?.app_metadata?.role === INVENTORY_STAFF_ROLE
+  const isCustomerDisplay = session?.user?.app_metadata?.role === CUSTOMER_DISPLAY_ROLE
   // Effects below key on the user id, not the session object — the session
   // is replaced on every token refresh and password re-check.
   const sessionUserId = session?.user?.id
@@ -4321,8 +4367,9 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (sessionUserId) refetchItems()
-  }, [sessionUserId])
+    if (sessionUserId && !isCustomerDisplay) refetchItems()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionUserId, isCustomerDisplay])
 
   // Live stock sync: every products change (a sale, void, or edit on any
   // device, recipe-driven ingredient deductions, Inventory edits) arrives
@@ -4330,7 +4377,7 @@ export default function App() {
   // Checkout, and Inventory all render from. On a reconnect (e.g. wifi
   // drop), events sent while disconnected are lost, so resync once then.
   useEffect(() => {
-    if (!sessionUserId) return
+    if (!sessionUserId || isCustomerDisplay) return
     let connectedBefore = false
     const channel = supabase
       .channel('products-live-sync')
@@ -4347,7 +4394,7 @@ export default function App() {
         connectedBefore = true
       })
     return () => { supabase.removeChannel(channel) }
-  }, [sessionUserId])
+  }, [sessionUserId, isCustomerDisplay])
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768)
@@ -4410,12 +4457,16 @@ export default function App() {
 
   // Void/edit both restore or re-deduct stock server-side per line item —
   // each changed product (and recipe ingredient) arrives via the live sync.
+  // Voiding or editing the sale still on the display's thank-you screen
+  // sends the display straight back to idle.
   const voidTransaction = async (saleId, voidedBy) => {
     await api.voidSale(saleId, voidedBy)
+    if (livePaid?.saleId === saleId) resetLiveOrder()
   }
 
   const editTransaction = async (saleId, payload) => {
     await api.editSale(saleId, payload)
+    if (livePaid?.saleId === saleId) resetLiveOrder()
   }
 
   // Standalone drawer open (change/shift counts) — no transaction, no
@@ -4447,6 +4498,59 @@ export default function App() {
 
   const removeFromCart = id => setCart(prev => prev.filter(i => i.id !== id))
   const clearCart = () => setCart([])
+
+  // ─── Customer Display publisher (register device only) ────────────────────
+  // Publishes the regular cart — never the staff cart — as a customer-safe
+  // snapshot (buildLivePayload) on every change, plus a heartbeat every
+  // LIVE_ORDER_HEARTBEAT_MS so the display knows the register is alive.
+  const [isRegister, setIsRegister] = useState(() => isRegisterDevice())
+  const [liveDetails, setLiveDetails] = useState({})
+  const [livePaid, setLivePaid] = useState(null) // { saleId, payload } while showing "Thank you!"
+  const liveOrderKey = useRef(newOrderKey())
+  const publishingLive = !!session && isRegister && !isInventoryStaff && !isCustomerDisplay
+  const livePayload = livePaid ? livePaid.payload : buildLivePayload(cart, liveDetails, liveOrderKey.current)
+  const livePayloadJson = JSON.stringify(livePayload)
+  const latestLiveJson = useRef(livePayloadJson)
+  latestLiveJson.current = livePayloadJson
+
+  // A fresh key for every new order, and any item added after a payment
+  // starts a new order — so nothing from the last customer carries over.
+  useEffect(() => {
+    if (cart.length === 0 && !livePaid) liveOrderKey.current = newOrderKey()
+    if (cart.length > 0 && livePaid) { liveOrderKey.current = newOrderKey(); setLivePaid(null) }
+  }, [cart.length, livePaid])
+
+  useEffect(() => {
+    if (!publishingLive) return
+    const t = setTimeout(() => publishLiveOrder(JSON.parse(livePayloadJson)), 120)
+    return () => clearTimeout(t)
+  }, [publishingLive, livePayloadJson])
+
+  useEffect(() => {
+    if (!publishingLive) return
+    const interval = setInterval(() => publishLiveOrder(JSON.parse(latestLiveJson.current)), LIVE_ORDER_HEARTBEAT_MS)
+    return () => clearInterval(interval)
+  }, [publishingLive])
+
+  // Order type / cash tendered belong to one order: cleared at payment and
+  // at reset, so they can never show up on the next customer's order.
+  const markLivePaid = saleId => {
+    setLivePaid({ saleId, payload: buildLivePayload(cart, liveDetails, liveOrderKey.current, 'paid', 'printing') })
+    setLiveDetails({})
+  }
+  const setLiveReceipt = (saleId, receipt) => {
+    setLivePaid(prev => (prev && prev.saleId === saleId && prev.payload.receipt === 'printing') ? { ...prev, payload: { ...prev.payload, receipt } } : prev)
+  }
+  const resetLiveOrder = () => { liveOrderKey.current = newOrderKey(); setLivePaid(null); setLiveDetails({}) }
+  const handleSetRegister = on => {
+    setRegisterDevice(on)
+    setIsRegister(on)
+    if (!on && session) publishLiveOrder(IDLE_PAYLOAD) // hand the display back to idle
+  }
+  const signOut = async () => {
+    if (publishingLive) await publishLiveOrder(IDLE_PAYLOAD)
+    supabase.auth.signOut()
+  }
   const updateCartItemNote = (id, note) => setCart(prev => prev.map(i => i.id === id ? { ...i, note } : i))
   const updateCartItemAddOns = (id, addOns) => setCart(prev => prev.map(i => i.id === id ? { ...i, addOns } : i))
 
@@ -4491,6 +4595,12 @@ export default function App() {
     return <Login />
   }
 
+  // The display account gets the display and nothing else — no sidebar,
+  // no screens, no navigation.
+  if (isCustomerDisplay) {
+    return <CustomerDisplay logo={dimpzCafeLogo} />
+  }
+
   // Inventory Staff always get Inventory, whatever `screen` holds — so no
   // stray setScreen (a Dashboard shortcut, a stale state) can reach anything
   // else. Everything below renders from activeScreen, never screen.
@@ -4501,14 +4611,14 @@ export default function App() {
     switch (activeScreen) {
       case 'dashboard': return <Dashboard onNavigate={setScreen} cart={cart} financials={financials} />
       case 'products': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToCart} onUpdateQty={updateQty} onRemove={removeFromCart} cart={cart} onNavigate={setScreen} />
-      case 'checkout': return <Checkout items={items} cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onUpdateAddOns={updateCartItemAddOns} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} />
+      case 'checkout': return <Checkout items={items} cart={cart} onUpdateQty={updateQty} onRemove={removeFromCart} onUpdateNote={updateCartItemNote} onUpdateAddOns={updateCartItemAddOns} onClearCart={clearCart} onCharge={chargeSale} businessName={settings.businessName} onNavigate={setScreen} onLiveDetails={setLiveDetails} onLivePaid={markLivePaid} onLiveReceipt={setLiveReceipt} onLiveReset={resetLiveOrder} />
       case 'staffOrder': return <Products items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onDeleteItem={deleteItem} onAddToCart={addToStaffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} cart={staffCart} onNavigate={setScreen} checkoutScreen="staffOrderCheckout" isStaffMode />
       case 'staffOrderCheckout': return <StaffOrderCheckout cart={staffCart} onUpdateQty={updateStaffQty} onRemove={removeFromStaffCart} onClearCart={clearStaffCart} onCharge={chargeStaffOrder} businessName={settings.businessName} onNavigate={setScreen} />
       case 'staffOrdersLog': return <StaffOrdersLog businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers businessName={settings.businessName} />
       case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} financials={financials} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
-      case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} userEmail={session?.user?.email} />
+      case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} userEmail={session?.user?.email} isRegister={isRegister} onSetRegister={handleSetRegister} />
       default: return null
     }
   }
@@ -4635,7 +4745,7 @@ export default function App() {
             </div>
           </div>
           <button
-            onClick={() => supabase.auth.signOut()}
+            onClick={signOut}
             className="w-full text-left text-xs text-[#a8977e] hover:text-[#ddcca6] transition-colors"
           >
             Log out
