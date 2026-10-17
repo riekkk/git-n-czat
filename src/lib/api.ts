@@ -417,21 +417,6 @@ export async function deleteVoidedSale(saleId, deletePassword) {
   if (!data?.ok) throw new Error(data?.error || 'The sale could not be deleted')
 }
 
-// Settings: whether a delete password has been set yet.
-export async function isDeletePasswordSet() {
-  const { data, error } = await supabase.rpc('delete_password_is_set')
-  if (error) throw error
-  return !!data
-}
-
-// Settings: change the delete password (current one required), or set it
-// the first time (current = null). Checked and hashed in the database.
-export async function setDeletePassword(currentPassword, newPassword) {
-  const { data, error } = await supabase.rpc('set_delete_password', { p_current: currentPassword, p_new: newPassword })
-  if (error) throw new Error(error.message || 'The delete password could not be changed')
-  if (!data?.ok) throw new Error(data?.error || 'The delete password could not be changed')
-}
-
 // Reports: replaces a sale's line items and totals, adjusting stock by the
 // difference between old and new quantities per product, and stamping who
 // edited it and when so the record shows it's no longer the original.

@@ -4083,92 +4083,6 @@ function CustomerDisplayCard({ isRegister, onChange }) {
   )
 }
 
-// ─── Delete password (Settings) — the separate password for permanently
-// deleting voided sales. Checked and stored (salted hash only) in the
-// database; changing it needs the current one, with the same lockout.
-// Setting it for the first time asks for the account password instead.
-function DeletePasswordCard({ userEmail }) {
-  const [isSet, setIsSet] = useState(undefined)
-  const [open, setOpen] = useState(false)
-  const [current, setCurrent] = useState('')
-  const [next, setNext] = useState('')
-  const [confirm, setConfirm] = useState('')
-  const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [done, setDone] = useState(false)
-
-  useEffect(() => { api.isDeletePasswordSet().then(setIsSet).catch(() => setIsSet(null)) }, [])
-
-  const reset = () => { setOpen(false); setCurrent(''); setNext(''); setConfirm(''); setError('') }
-  const submit = async e => {
-    e.preventDefault()
-    setError('')
-    if (next.length < 6) { setError('The new delete password must be at least 6 characters.'); return }
-    if (next !== confirm) { setError("The new passwords don't match."); return }
-    setSaving(true)
-    try {
-      if (isSet) {
-        await api.setDeletePassword(current, next)
-      } else {
-        await verifyStaffPassword(userEmail, current)
-        await api.setDeletePassword(null, next)
-      }
-      setIsSet(true)
-      setDone(true)
-      reset()
-    } catch (err) {
-      setError(err.message || 'Could not save the delete password')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden">
-      <div className="px-5 py-4 border-b border-[#f5edd6] bg-[#fffcf5]">
-        <h2 className="font-semibold text-[#2c2416] text-sm">Delete password</h2>
-        <p className="text-xs text-[#a8977e] mt-0.5">A separate password for permanently deleting voided sales. Not your login password.</p>
-      </div>
-      <div className="p-5">
-        {!open ? (
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-sm text-[#7a6a50]">
-              {isSet === undefined ? 'Checking…' : isSet === null ? "Couldn't check the delete password." : isSet ? (done ? 'Delete password updated.' : 'A delete password is set.') : 'No delete password is set yet.'}
-            </p>
-            {isSet !== undefined && isSet !== null && (
-              <button onClick={() => { setDone(false); setOpen(true) }} className="text-xs font-semibold px-3 py-2 rounded-xl border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] shrink-0">
-                {isSet ? 'Change' : 'Set password'}
-              </button>
-            )}
-          </div>
-        ) : (
-          <form onSubmit={submit} className="space-y-3">
-            <div>
-              <label className={labelClass}>{isSet ? 'Current delete password' : 'Your account password'}</label>
-              <input type="password" required autoFocus autoComplete={isSet ? 'off' : 'current-password'} className={inputClass} value={current} onChange={e => setCurrent(e.target.value)} />
-            </div>
-            <div>
-              <label className={labelClass}>New delete password</label>
-              <input type="password" required minLength={6} autoComplete="new-password" className={inputClass} value={next} onChange={e => setNext(e.target.value)} />
-            </div>
-            <div>
-              <label className={labelClass}>Confirm new delete password</label>
-              <input type="password" required minLength={6} autoComplete="new-password" className={inputClass} value={confirm} onChange={e => setConfirm(e.target.value)} />
-            </div>
-            {error && <p className="text-xs text-[#b85c42]">{error}</p>}
-            <div className="flex gap-3">
-              <button type="button" onClick={reset} disabled={saving} className="flex-1 py-2.5 rounded-xl border border-[#e8ddc8] text-sm font-medium text-[#7a6a50]">Cancel</button>
-              <button type="submit" disabled={saving} className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-[#2c2416] text-[#ddcca6] disabled:opacity-60 flex items-center justify-center gap-2">
-                {saving && <Spinner className="w-4 h-4" />}{saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function Settings({ settings, onUpdateSettings, userEmail, isRegister, onSetRegister }) {
   const toggle = key => {
     onUpdateSettings(s => ({ ...s, [key]: !s[key] }))
@@ -4190,7 +4104,6 @@ function Settings({ settings, onUpdateSettings, userEmail, isRegister, onSetRegi
       <div className="space-y-4">
         <PrintStationCard userEmail={userEmail} />
         <CustomerDisplayCard isRegister={isRegister} onChange={onSetRegister} />
-        <DeletePasswordCard userEmail={userEmail} />
 
         {/* Business info */}
         <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden">
