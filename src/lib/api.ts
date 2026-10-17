@@ -319,24 +319,6 @@ export async function fetchAllSales() {
   }))
 }
 
-// Reports: permanently deletes all transaction history. sale_items are
-// removed first since they carry a foreign key to sales. .select('id') on
-// each delete makes a silently-blocked delete (e.g. an RLS policy gap)
-// surface as a real error instead of resolving as if it had succeeded —
-// this table previously had no DELETE policy at all, so the request
-// matched zero rows and returned no error.
-export async function clearAllSales() {
-  const ZERO_UUID = '00000000-0000-0000-0000-000000000000'
-  const { error: itemsError } = await supabase.from('sale_items').delete().neq('sale_id', ZERO_UUID).select('id')
-  if (itemsError) throw itemsError
-
-  const { data: deletedSales, error: salesError } = await supabase.from('sales').delete().neq('id', ZERO_UUID).select('id')
-  if (salesError) throw salesError
-  if (!deletedSales || deletedSales.length === 0) {
-    throw new Error('Transactions were not cleared — you may not have permission')
-  }
-}
-
 // Reports: all-time sale line items joined to product category + cost (for
 // Top Products, Category Breakdown, COGS/profit, and the transaction list's
 // per-order item detail). sale_id/product_id let callers exclude voided
@@ -421,6 +403,33 @@ export async function voidSale(saleId, voidedBy) {
     const detail = (err as { message?: string })?.message || String(err)
     throw new Error(`The sale was voided, but restoring its stock didn't finish — check Inventory counts for its items. (${detail})`)
   }
+}
+
+// Reports: permanently deletes a VOIDED sale and its lines in one database
+// call (delete_voided_sale). The database checks the separate delete
+// password (stored only as a salted hash, with a lockout after repeated
+// wrong attempts) and refuses completed sales, staff orders, Inventory
+// Staff and the Customer Display. Stock is not touched: the void already
+// restored it. Nothing about the deleted sale is kept.
+export async function deleteVoidedSale(saleId, deletePassword) {
+  const { data, error } = await supabase.rpc('delete_voided_sale', { p_sale_id: saleId, p_password: deletePassword })
+  if (error) throw new Error(error.message || 'The sale could not be deleted')
+  if (!data?.ok) throw new Error(data?.error || 'The sale could not be deleted')
+}
+
+// Settings: whether a delete password has been set yet.
+export async function isDeletePasswordSet() {
+  const { data, error } = await supabase.rpc('delete_password_is_set')
+  if (error) throw error
+  return !!data
+}
+
+// Settings: change the delete password (current one required), or set it
+// the first time (current = null). Checked and hashed in the database.
+export async function setDeletePassword(currentPassword, newPassword) {
+  const { data, error } = await supabase.rpc('set_delete_password', { p_current: currentPassword, p_new: newPassword })
+  if (error) throw new Error(error.message || 'The delete password could not be changed')
+  if (!data?.ok) throw new Error(data?.error || 'The delete password could not be changed')
 }
 
 // Reports: replaces a sale's line items and totals, adjusting stock by the

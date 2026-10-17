@@ -522,6 +522,33 @@ function FinancialRevealToggle({ revealed, onToggle }) {
   )
 }
 
+// ─── Hidden multi-tap trigger ──────────────────────────────────────────────
+// `taps` clicks/taps on the same row within `windowMs` of the first one fire
+// onTrigger(payload). Nothing visible happens before that. Taps that are too
+// slow, or on a different row, start the count over; taps on a button or
+// field inside the row (e.g. the ⋮ menu) are ignored so the row's normal
+// controls keep working. Uses click, which fires for mouse and touch alike
+// but not at the end of a scroll swipe.
+function useSecretTaps(onTrigger, { taps = 5, windowMs = 3000 } = {}) {
+  const state = useRef({ key: null, count: 0, first: 0 })
+  return (key, payload) => event => {
+    if (event.target.closest('button, a, input, select, textarea, label')) return
+    const now = Date.now()
+    const st = state.current
+    if (st.key !== key || now - st.first > windowMs) {
+      st.key = key
+      st.count = 0
+      st.first = now
+    }
+    st.count += 1
+    if (st.count >= taps) {
+      st.key = null
+      st.count = 0
+      onTrigger(payload)
+    }
+  }
+}
+
 // ─── 3-dot row menu (Void/Edit) ────────────────────────────────────────────
 function TransactionMenu({ onReprint, onVoid, onEdit }) {
   const [open, setOpen] = useState(false)
@@ -3004,11 +3031,14 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
   const [saleItems, setSaleItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [voidTarget, setVoidTarget] = useState(null)
   const [editPasswordTarget, setEditPasswordTarget] = useState(null)
   const [editingSale, setEditingSale] = useState(null)
   const [reprintTarget, setReprintTarget] = useState(null)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  // 5 quick taps on a VOIDED row (hidden — no button or hint) opens the
+  // permanent-delete prompt. Completed rows never get the handler.
+  const secretTapsOnVoided = useSecretTaps(sale => setDeleteTarget(sale))
   const [orderTypeFilter, setOrderTypeFilter] = useState('all')
   const [expandedCategory, setExpandedCategory] = useState(null)
   // Transaction History day grouping: a day's expanded/collapsed state only
@@ -3105,20 +3135,12 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
     })
   }
 
-  // Clearing, voiding, and editing all touch financial records, so each is
-  // gated behind re-entering the signed-in staff account's login password —
+  // Voiding and editing touch financial records, so each is gated behind
+  // re-entering the signed-in staff account's login password —
   // verified against Supabase Auth itself (verifyStaffPassword) rather than
   // a client-side comparison, so it can't be bypassed by reading the source.
   // This only confirms intent/authorization for the account already signed
   // in; it doesn't restrict which staff accounts can do it.
-  const handleClearConfirm = async password => {
-    await verifyStaffPassword(userEmail, password)
-    await api.clearAllSales()
-    setSales([])
-    setSaleItems([])
-    setShowClearConfirm(false)
-  }
-
   const handleVoidConfirm = async password => {
     await verifyStaffPassword(userEmail, password)
     await onVoidTransaction(voidTarget.id, userEmail)
@@ -3127,6 +3149,19 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
       : s
     ))
     setVoidTarget(null)
+  }
+
+  // Permanent delete of a voided sale. The separate DELETE PASSWORD (not the
+  // account password) is checked in the database, which also re-checks the
+  // rest (voided only, not a staff order, full staff only, lockout) and
+  // removes its sale lines in the same step; stock isn't touched (the void
+  // restored it). Removing it from local state updates every figure on this
+  // page at once; other devices reload on the realtime DELETE.
+  const handleDeleteVoidedConfirm = async deletePassword => {
+    await api.deleteVoidedSale(deleteTarget.id, deletePassword)
+    setSales(prev => prev.filter(s => s.id !== deleteTarget.id))
+    setSaleItems(prev => prev.filter(i => i.saleId !== deleteTarget.id))
+    setDeleteTarget(null)
   }
 
   const handleEditPasswordConfirm = async password => {
@@ -3303,14 +3338,6 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
         {/* Action buttons */}
         <div className="flex items-center gap-2 flex-wrap">
           <FinancialRevealToggle revealed={financials.revealed} onToggle={financials.toggle} />
-          <button
-            onClick={() => setShowClearConfirm(true)}
-            disabled={sales.length === 0}
-            title="Permanently delete all transaction history"
-            className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-[#fdf0ec] text-[#b85c42] hover:bg-[#f9e2db] transition-colors disabled:opacity-50"
-          >
-            <IconRefresh /> Clear ({sales.length})
-          </button>
           <button
             onClick={() => exportSalesToExcel(activeSales, businessName)}
             disabled={activeSales.length === 0}
@@ -3669,7 +3696,12 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
                         const saleLineItems = itemsBySale.get(sale.id) || []
                         const itemCount = saleLineItems.filter(i => !isOrderCharge(i)).reduce((sum, i) => sum + i.qty, 0)
                         return (
-                          <div key={sale.id} className={`flex items-center justify-between gap-4 px-5 py-4 ${isVoided ? 'opacity-50' : 'hover:bg-[#fffcf5]'} transition-colors`}>
+                          <div
+                            key={sale.id}
+                            onClick={isVoided ? secretTapsOnVoided(sale.id, sale) : undefined}
+                            style={isVoided ? { touchAction: 'manipulation' } : undefined}
+                            className={`flex items-center justify-between gap-4 px-5 py-4 ${isVoided ? 'opacity-50' : 'hover:bg-[#fffcf5]'} transition-colors`}
+                          >
                             <div className="flex items-center gap-4 min-w-0">
                               <div className="w-9 h-9 rounded-xl bg-[#fff9ea] flex items-center justify-center text-[#a8977e] text-xs font-mono shrink-0">
                                 {String(sale.id).slice(-2)}
@@ -3716,15 +3748,6 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
       </div>
     </div>
 
-    {showClearConfirm && (
-      <PasswordConfirmModal
-        title="Clear Transaction Reports"
-        message={`This permanently deletes all ${sales.length} recorded transaction${sales.length === 1 ? '' : 's'}. This cannot be undone. Re-enter your account password to confirm.`}
-        confirmLabel="Clear Everything"
-        onConfirm={handleClearConfirm}
-        onClose={() => setShowClearConfirm(false)}
-      />
-    )}
 
     {voidTarget && (
       <PasswordConfirmModal
@@ -3733,6 +3756,16 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
         confirmLabel="Void Transaction"
         onConfirm={handleVoidConfirm}
         onClose={() => setVoidTarget(null)}
+      />
+    )}
+
+    {deleteTarget && (
+      <PasswordConfirmModal
+        title="Delete voided sale permanently?"
+        message={`Receipt #${String(deleteTarget.id).slice(0, 8).toUpperCase()} · ${formatPHP(deleteTarget.total)} · ${paymentLabel(deleteTarget.payment_method)} · ${new Date(deleteTarget.created_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}. This removes the voided sale and its items from every list and total, and can't be undone. Stock won't change (the void already restored it). Enter the delete password to confirm.`}
+        confirmLabel="Delete permanently"
+        onConfirm={handleDeleteVoidedConfirm}
+        onClose={() => setDeleteTarget(null)}
       />
     )}
 
@@ -4050,6 +4083,92 @@ function CustomerDisplayCard({ isRegister, onChange }) {
   )
 }
 
+// ─── Delete password (Settings) — the separate password for permanently
+// deleting voided sales. Checked and stored (salted hash only) in the
+// database; changing it needs the current one, with the same lockout.
+// Setting it for the first time asks for the account password instead.
+function DeletePasswordCard({ userEmail }) {
+  const [isSet, setIsSet] = useState(undefined)
+  const [open, setOpen] = useState(false)
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [done, setDone] = useState(false)
+
+  useEffect(() => { api.isDeletePasswordSet().then(setIsSet).catch(() => setIsSet(null)) }, [])
+
+  const reset = () => { setOpen(false); setCurrent(''); setNext(''); setConfirm(''); setError('') }
+  const submit = async e => {
+    e.preventDefault()
+    setError('')
+    if (next.length < 6) { setError('The new delete password must be at least 6 characters.'); return }
+    if (next !== confirm) { setError("The new passwords don't match."); return }
+    setSaving(true)
+    try {
+      if (isSet) {
+        await api.setDeletePassword(current, next)
+      } else {
+        await verifyStaffPassword(userEmail, current)
+        await api.setDeletePassword(null, next)
+      }
+      setIsSet(true)
+      setDone(true)
+      reset()
+    } catch (err) {
+      setError(err.message || 'Could not save the delete password')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden">
+      <div className="px-5 py-4 border-b border-[#f5edd6] bg-[#fffcf5]">
+        <h2 className="font-semibold text-[#2c2416] text-sm">Delete password</h2>
+        <p className="text-xs text-[#a8977e] mt-0.5">A separate password for permanently deleting voided sales. Not your login password.</p>
+      </div>
+      <div className="p-5">
+        {!open ? (
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm text-[#7a6a50]">
+              {isSet === undefined ? 'Checking…' : isSet === null ? "Couldn't check the delete password." : isSet ? (done ? 'Delete password updated.' : 'A delete password is set.') : 'No delete password is set yet.'}
+            </p>
+            {isSet !== undefined && isSet !== null && (
+              <button onClick={() => { setDone(false); setOpen(true) }} className="text-xs font-semibold px-3 py-2 rounded-xl border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] shrink-0">
+                {isSet ? 'Change' : 'Set password'}
+              </button>
+            )}
+          </div>
+        ) : (
+          <form onSubmit={submit} className="space-y-3">
+            <div>
+              <label className={labelClass}>{isSet ? 'Current delete password' : 'Your account password'}</label>
+              <input type="password" required autoFocus autoComplete={isSet ? 'off' : 'current-password'} className={inputClass} value={current} onChange={e => setCurrent(e.target.value)} />
+            </div>
+            <div>
+              <label className={labelClass}>New delete password</label>
+              <input type="password" required minLength={6} autoComplete="new-password" className={inputClass} value={next} onChange={e => setNext(e.target.value)} />
+            </div>
+            <div>
+              <label className={labelClass}>Confirm new delete password</label>
+              <input type="password" required minLength={6} autoComplete="new-password" className={inputClass} value={confirm} onChange={e => setConfirm(e.target.value)} />
+            </div>
+            {error && <p className="text-xs text-[#b85c42]">{error}</p>}
+            <div className="flex gap-3">
+              <button type="button" onClick={reset} disabled={saving} className="flex-1 py-2.5 rounded-xl border border-[#e8ddc8] text-sm font-medium text-[#7a6a50]">Cancel</button>
+              <button type="submit" disabled={saving} className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-[#2c2416] text-[#ddcca6] disabled:opacity-60 flex items-center justify-center gap-2">
+                {saving && <Spinner className="w-4 h-4" />}{saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function Settings({ settings, onUpdateSettings, userEmail, isRegister, onSetRegister }) {
   const toggle = key => {
     onUpdateSettings(s => ({ ...s, [key]: !s[key] }))
@@ -4071,6 +4190,7 @@ function Settings({ settings, onUpdateSettings, userEmail, isRegister, onSetRegi
       <div className="space-y-4">
         <PrintStationCard userEmail={userEmail} />
         <CustomerDisplayCard isRegister={isRegister} onChange={onSetRegister} />
+        <DeletePasswordCard userEmail={userEmail} />
 
         {/* Business info */}
         <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)] overflow-hidden">
