@@ -159,6 +159,8 @@ function OrderScreen({ order, listRef }) {
       <div className="landscape:w-[38%] bg-white border-t landscape:border-t-0 landscape:border-l border-[#f0e8d8] p-6 md:p-10 flex flex-col justify-center gap-4">
         <Row label="Subtotal" value={peso(order.itemsSubtotal)} />
         {order.packagingFee > 0 && <Row label="Packaging fee" value={peso(order.packagingFee)} />}
+        {/* Amount only — names and ID numbers never reach the display. */}
+        {order.discount > 0 && <Row label="SC/PWD discount" value={`−${peso(order.discount)}`} />}
         <div className="border-t border-[#e8ddc8] pt-5 mt-1">
           <p className="text-xl md:text-2xl text-[#a8977e] font-medium uppercase tracking-wider">Total</p>
           <p style={{ fontFamily: 'var(--font-serif)' }} className="text-6xl md:text-7xl font-bold mt-1">{peso(order.total)}</p>

@@ -1,6 +1,7 @@
 import { supabase } from './supabase'
 import { isOrderCharge } from './categories'
 import { countsTowardReports } from './salesFilters'
+import type { OrderDiscount } from './discounts.ts'
 
 const LOW_STOCK_THRESHOLD = 15
 
@@ -180,7 +181,13 @@ async function applyRecipeStockDelta(productId, productQtyDelta) {
   }
 }
 
-export async function recordSale({ customerName, items, total, paymentMethod, amountReceived, changeGiven, orderType, isStaffOrder }) {
+// `discount` (optional) is an OrderDiscount from computeOrderDiscount with
+// ok: true — `total` is then its net. Its per-person records are written
+// right after the sale row, before any line item or stock change, so if
+// that insert fails the sale is voided straight away (nothing to restore
+// yet) rather than left looking discounted with no record of who for.
+export async function recordSale({ customerName, items, total, paymentMethod, amountReceived, changeGiven, orderType, isStaffOrder, discount = null as OrderDiscount | null }) {
+  const hasDiscount = !isStaffOrder && !!discount && discount.people.length > 0
   const { data: sale, error: saleError } = await supabase
     .from('sales')
     .insert({
@@ -191,10 +198,33 @@ export async function recordSale({ customerName, items, total, paymentMethod, am
       change_given: paymentMethod === 'cash' ? changeGiven : null,
       order_type: orderType || null,
       is_staff_order: !!isStaffOrder,
+      gross_total: hasDiscount ? discount!.orderGross : null,
+      discount_total: hasDiscount ? discount!.discountTotal : null,
     })
     .select()
     .single()
   if (saleError) throw saleError
+
+  if (hasDiscount && discount) {
+    // cashier is stamped by the database from the signed-in account.
+    const { error: discountError } = await supabase.from('sale_discounts').insert(discount.people.map(p => ({
+      sale_id: sale.id,
+      discount_type: p.person.type,
+      full_name: p.person.fullName.trim(),
+      id_type: p.person.idType,
+      id_number: p.person.idNumber.trim(),
+      id_verified: p.person.idVerified,
+      mode: discount.mode,
+      covered: p.covered,
+      gross: p.gross,
+      discount: p.discount,
+      net: p.net,
+    })))
+    if (discountError) {
+      await supabase.from('sales').update({ status: 'voided', voided_at: new Date().toISOString(), voided_by: 'system: SC/PWD record failed' }).eq('id', sale.id)
+      throw new Error(`The SC/PWD discount details couldn't be saved, so the sale was not recorded — try again. (${discountError.message})`)
+    }
+  }
 
   const lineItems = items.map(i => ({
     sale_id: sale.id,
@@ -289,11 +319,11 @@ export async function fetchRecentSales(daysBack = 7) {
 // A non-literal select string defeats supabase-js's column-shape type
 // inference (it falls back to an opaque stub type) — declared any[] here to
 // match this file's existing loosely-typed rows rather than fight that.
-async function fetchAllRows(table: string, selectClause: string, orderColumns: [string, { ascending: boolean }][]): Promise<any[]> {
+async function fetchAllRows(table: string, selectClause: string, orderColumns: [string, { ascending: boolean }][], filter: (query: any) => any = q => q): Promise<any[]> {
   const PAGE_SIZE = 1000
   const rows: any[] = []
   for (let from = 0; ; from += PAGE_SIZE) {
-    let query = supabase.from(table).select(selectClause).range(from, from + PAGE_SIZE - 1) as any
+    let query = filter(supabase.from(table).select(selectClause)).range(from, from + PAGE_SIZE - 1) as any
     for (const [column, options] of orderColumns) query = query.order(column, options)
     const { data, error } = await query
     if (error) throw error
@@ -308,15 +338,61 @@ async function fetchAllRows(table: string, selectClause: string, orderColumns: [
 export async function fetchAllSales() {
   const data = await fetchAllRows(
     'sales',
-    'id, customer_name, total, payment_method, order_type, is_staff_order, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given',
+    'id, customer_name, total, gross_total, discount_total, payment_method, order_type, is_staff_order, created_at, status, voided_at, voided_by, edited_at, edited_by, amount_received, change_given',
     [['created_at', { ascending: true }], ['id', { ascending: true }]]
   )
   return data.map(s => ({
     ...s,
     total: Number(s.total),
+    // NULL on every sale without an SC/PWD discount (all sales before it existed).
+    gross_total: s.gross_total != null ? Number(s.gross_total) : null,
+    discount_total: s.discount_total != null ? Number(s.discount_total) : null,
     amount_received: s.amount_received != null ? Number(s.amount_received) : null,
     change_given: s.change_given != null ? Number(s.change_given) : null,
   }))
+}
+
+function mapSaleDiscountRow(row) {
+  return {
+    id: row.id,
+    saleId: row.sale_id,
+    createdAt: row.created_at,
+    cashier: row.cashier,
+    type: row.discount_type,
+    fullName: row.full_name,
+    idType: row.id_type,
+    idNumber: row.id_number,
+    idVerified: row.id_verified,
+    mode: row.mode,
+    covered: row.covered,
+    gross: Number(row.gross),
+    discount: Number(row.discount),
+    net: Number(row.net),
+  }
+}
+
+// One sale's SC/PWD records (receipt reprints). Empty for undiscounted sales.
+export async function fetchSaleDiscounts(saleId) {
+  const { data, error } = await supabase.from('sale_discounts').select('*').eq('sale_id', saleId).order('created_at', { ascending: true })
+  if (error) throw error
+  return data.map(mapSaleDiscountRow)
+}
+
+// SC/PWD Discount Log: every discounted person in [fromIso, toIso), newest
+// first, optionally one discount type. Voided sales are dropped with the
+// shared countsTowardReports rule, like every other report.
+export async function fetchDiscountLog({ fromIso, toIso, type = 'all' }: { fromIso: string; toIso: string; type?: string }) {
+  const data = await fetchAllRows(
+    'sale_discounts',
+    '*, sales(status, is_staff_order, total)',
+    [['created_at', { ascending: false }], ['id', { ascending: true }]],
+    q => {
+      let query = q.gte('created_at', fromIso).lt('created_at', toIso)
+      if (type !== 'all') query = query.eq('discount_type', type)
+      return query
+    }
+  )
+  return data.filter(row => countsTowardReports(row.sales)).map(mapSaleDiscountRow)
 }
 
 // Reports: all-time sale line items joined to product category + cost (for
@@ -421,6 +497,15 @@ export async function deleteVoidedSale(saleId, deletePassword) {
 // difference between old and new quantities per product, and stamping who
 // edited it and when so the record shows it's no longer the original.
 export async function editSale(saleId, { items, paymentMethod, amountReceived, changeGiven, editedBy }) {
+  // An SC/PWD-discounted sale can't be edited (recomputing the total below
+  // would drop the discount; the database refuses it too). Checked before
+  // anything — stock included — is touched.
+  const { data: current, error: currentError } = await supabase.from('sales').select('discount_total').eq('id', saleId).maybeSingle()
+  if (currentError) throw currentError
+  if (current?.discount_total != null) {
+    throw new Error('This sale has an SC/PWD discount, so it can\'t be edited. Void it and ring it up again.')
+  }
+
   const { data: oldItems, error: oldItemsError } = await supabase
     .from('sale_items')
     .select('product_id, product_name, quantity, add_ons')

@@ -3,9 +3,10 @@
 // it (and nothing else — see the customer_display migration).
 //
 // Only customer-safe fields ever leave the register: names, quantities,
-// prices, add-on names, totals, order type and cash tendered. Never notes,
-// customer names, costs, stock, or anything from a staff order (the staff
-// cart is a separate cart that is never published).
+// prices, add-on names, totals, order type and cash tendered, and the
+// SC/PWD discount AMOUNT only. Never notes, customer names, SC/PWD names or
+// ID numbers, costs, stock, or anything from a staff order (the staff cart
+// is a separate cart that is never published).
 import { supabase } from './supabase'
 import { isOrderCharge } from './categories'
 
@@ -41,6 +42,7 @@ export interface LiveOrderPayload {
   items: LiveOrderItem[]
   itemsSubtotal: number
   packagingFee: number
+  discount: number // SC/PWD discount amount only — never who it's for
   total: number
   paymentMethod?: string
   amountReceived?: number | null
@@ -48,7 +50,7 @@ export interface LiveOrderPayload {
   receipt: LiveReceipt
 }
 
-export const IDLE_PAYLOAD: LiveOrderPayload = { phase: 'idle', orderKey: 'idle', items: [], itemsSubtotal: 0, packagingFee: 0, total: 0, receipt: null }
+export const IDLE_PAYLOAD: LiveOrderPayload = { phase: 'idle', orderKey: 'idle', items: [], itemsSubtotal: 0, packagingFee: 0, discount: 0, total: 0, receipt: null }
 
 export function newOrderKey(): string {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -65,6 +67,7 @@ interface CheckoutDetails {
   orderType?: string
   paymentMethod?: string
   amountReceived?: string | number | null
+  discount?: number
 }
 
 // Cart (+ checkout details) → the customer-safe snapshot. Deliberately
@@ -82,7 +85,8 @@ export function buildLivePayload(cart: CartLine[], details: CheckoutDetails, ord
   }))
   const packagingFee = cart.filter(l => isOrderCharge(l)).reduce((s, l) => s + lineTotal(l), 0)
   const itemsSubtotal = items.reduce((s, i) => s + i.lineTotal, 0)
-  const total = itemsSubtotal + packagingFee
+  const discount = Math.max(0, Number(details.discount) || 0)
+  const total = Math.round((itemsSubtotal + packagingFee - discount) * 100) / 100
   const isCash = details.paymentMethod === 'cash'
   const received = isCash && details.amountReceived !== '' && details.amountReceived != null ? Number(details.amountReceived) : null
   return {
@@ -92,6 +96,7 @@ export function buildLivePayload(cart: CartLine[], details: CheckoutDetails, ord
     items,
     itemsSubtotal,
     packagingFee,
+    discount,
     total,
     paymentMethod: details.paymentMethod,
     amountReceived: received != null && !Number.isNaN(received) ? received : null,

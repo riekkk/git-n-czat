@@ -186,8 +186,10 @@ export function computeOrderDiscount({
         const unitC = unitPriceCentavos(line)
         covered.push({ lineId: line.id, name: line.name, qty: unit.qty, unitPrice: toPesos(unitC), amount: toPesos(unitC * unit.qty) })
       }
+      const grossC = covered.reduce((sum, c) => sum + toCentavos(c.amount), 0)
       if (covered.length === 0) errors.push(`${label(i)}Select at least one item for this person.`)
-      results.push({ person, covered, grossC: covered.reduce((sum, c) => sum + toCentavos(c.amount), 0) })
+      else if (grossC === 0) errors.push(`${label(i)}Their items are free — there's nothing to discount.`)
+      results.push({ person, covered, grossC })
     })
     for (const [lineId, qty] of assignedPerLine) {
       const line = cart.find(l => l.id === lineId)!

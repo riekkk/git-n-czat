@@ -118,6 +118,12 @@ test('item mode: each person must cover at least one item', () => {
   assert.match(r.errors.join(' '), /at least one item/)
 })
 
+test('item mode: free items alone are not a discount (the database refuses a ₱0 record)', () => {
+  const r = computeOrderDiscount({ cart: [line('Water', 0)], mode: 'items', people: [senior({ items: [{ lineId: 'Water', qty: 1 }] })] })
+  assert.equal(r.ok, false)
+  assert.match(r.errors.join(' '), /nothing to discount/)
+})
+
 test('one discount per person: the same ID twice is rejected (spacing/dashes ignored)', () => {
   const r = computeOrderDiscount({
     cart: [line('Platter', 1000)], mode: 'shared', diners: 4,

@@ -5,6 +5,8 @@
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from './categories'
 import { LOGO_RASTER_BASE64 } from './receiptLogo'
 import { fetchPrintStation } from './api'
+import { DISCOUNT_RATE_PERCENT, ID_TYPE_LABELS, maskIdNumber } from './discounts.ts'
+import type { DiscountType, IdType } from './discounts.ts'
 
 const PRINTNODE_API_KEY = import.meta.env.VITE_PRINTNODE_API_KEY
 const PRINTNODE_URL = 'https://api.printnode.com/printjobs'
@@ -94,13 +96,24 @@ function printableItems(order: ReceiptOrder): ReceiptItem[] {
   return order.items.filter(item => !isOrderCharge(item))
 }
 
+// One SC/PWD-discounted person, as printed on Customer/Cafe copies only
+// (never Kitchen/Barista). The ID number is always printed masked.
+export interface ReceiptDiscount {
+  type: DiscountType
+  fullName: string
+  idType: IdType
+  idNumber: string
+  discount: number
+}
+
 export interface ReceiptOrder {
   id?: string
   createdAt?: string
   customerName?: string
   items: ReceiptItem[]
-  subtotal: number
-  total: number
+  subtotal: number // gross when discounted
+  total: number // amount charged (net)
+  discounts?: ReceiptDiscount[]
   paymentMethod?: string
   amountReceived?: number
   change?: number
@@ -206,6 +219,27 @@ function wrapLine(text: string, width = RECEIPT_WIDTH): string {
   return text.length <= width ? `${text}\n` : `${text.slice(0, width)}\n${text.slice(width)}\n`
 }
 
+// Not BIR-registered yet: every Customer/Cafe copy says it isn't an
+// official receipt or invoice. Two lines — the full sentence is wider than
+// the 48-column paper.
+function internalReceiptNotice(width: number): string {
+  return centerLine('INTERNAL RECEIPT', width) + centerLine('NOT AN OFFICIAL RECEIPT / INVOICE', width)
+}
+
+// Gross, one block per discounted person (type, amount, name, masked ID),
+// then net. The mask's dots are swapped for '*', which every code page has.
+function discountLines(order: ReceiptOrder, width: number): string {
+  const parts: string[] = [padLine('Gross Amount', formatMoneyForPrint(order.subtotal), width)]
+  for (const d of order.discounts || []) {
+    const label = `${d.type === 'senior' ? 'SC' : 'PWD'} Discount (${DISCOUNT_RATE_PERCENT}%)`
+    parts.push(padLine(label, `-${formatMoneyForPrint(d.discount)}`, width))
+    parts.push(wrapLine(`  ${sanitizeForPrint(d.fullName)}`, width))
+    parts.push(wrapLine(`  ${ID_TYPE_LABELS[d.idType] || 'ID'} ${maskIdNumber(d.idNumber).replace(/•/g, '*')}`, width))
+  }
+  parts.push(padLine('Net Amount', formatMoneyForPrint(order.total), width))
+  return parts.join('')
+}
+
 function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   const width = RECEIPT_WIDTH
   const divider = `${'-'.repeat(width)}\n`
@@ -231,6 +265,7 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   if (order.id) {
     parts.push(centerLine(`Order #${order.id.slice(0, 8).toUpperCase()}`, width))
   }
+  parts.push(internalReceiptNotice(width))
   // Customer Copy stays plain; every other copy from here (Cafe) gets the
   // bold/tall name + order type — see emphasize.
   const emphasis = copyLabel === 'CUSTOMER COPY' ? (line: string) => line : emphasize
@@ -253,7 +288,11 @@ function buildReceiptText(order: ReceiptOrder, copyLabel?: string): string {
   })
 
   parts.push(divider)
-  parts.push(padLine('Subtotal', formatMoneyForPrint(order.subtotal), width))
+  if (order.discounts?.length) {
+    parts.push(discountLines(order, width))
+  } else {
+    parts.push(padLine('Subtotal', formatMoneyForPrint(order.subtotal), width))
+  }
   if (order.paymentMethod === 'cash' && order.amountReceived != null) {
     parts.push(padLine('Cash Received', formatMoneyForPrint(order.amountReceived), width))
     parts.push(padLine('Change', formatMoneyForPrint(order.change ?? 0), width))

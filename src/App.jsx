@@ -8,6 +8,7 @@ import { printReceipt, openCashDrawer, reprintReceipt, printStaffOrderReceipt, P
 import { DRINK_CATEGORIES, PASTRY_FOOD_CATEGORIES, isOrderCharge } from '@/lib/categories'
 import { verifyStaffPassword } from '@/lib/auth'
 import { countsTowardReports, isVoidedSale, linesOfSales } from '@/lib/salesFilters'
+import { computeOrderDiscount, pickHigherDiscount, maskIdNumber, DISCOUNT_RATE_PERCENT, DISCOUNT_TYPE_LABELS, ID_TYPE_LABELS, ID_TYPES_FOR } from '@/lib/discounts.ts'
 import { buildLivePayload, publishLiveOrder, newOrderKey, isRegisterDevice, setRegisterDevice, IDLE_PAYLOAD, LIVE_ORDER_HEARTBEAT_MS } from '@/lib/liveOrder'
 import CustomerDisplay from '@/CustomerDisplay'
 import * as XLSX from 'xlsx'
@@ -628,13 +629,18 @@ function ReprintButtons({ order, items, businessName }) {
     // double-submit can't print twice but a later reprint still can.
     const requestId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
     try {
+      // Kitchen/Barista copies never show discounts, so only the customer-
+      // facing copies load the sale's SC/PWD records.
+      const discounts = (copyType === 'customer' || copyType === 'cafe') && !order.is_staff_order ? await api.fetchSaleDiscounts(order.id) : []
+      const discountTotal = discounts.reduce((sum, d) => sum + d.discount, 0)
       await reprintReceipt({
         id: order.id,
         createdAt: order.created_at,
         customerName: order.customer_name,
         items,
-        subtotal: order.total,
+        subtotal: Math.round((order.total + discountTotal) * 100) / 100,
         total: order.total,
+        discounts,
         paymentMethod: order.payment_method,
         amountReceived: order.amount_received,
         change: order.change_given,
@@ -1572,7 +1578,7 @@ function Products({ items, itemsLoading, itemsError, onRetryItems, onAddItem, on
 }
 
 // ─── Receipt (print-only — hidden on screen, see .receipt-print in index.css) ─
-function Receipt({ businessName, saleId, createdAt, customerName, items, subtotal, total, paymentMethod, amountReceived, change, orderType }) {
+function Receipt({ businessName, saleId, createdAt, customerName, items, subtotal, total, discounts = [], paymentMethod, amountReceived, change, orderType }) {
   const paymentMethodLabel = paymentMethod === 'card' ? 'Card' : paymentMethod === 'cash' ? 'Cash' : 'GCash'
   return (
     <div className="receipt-print font-mono text-black bg-white text-[11px] leading-snug w-[80mm] mx-auto p-3">
@@ -1580,6 +1586,7 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
         <p className="font-bold text-sm uppercase tracking-wide">{businessName}</p>
         <p>{new Date(createdAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
         <p>Order #{String(saleId || '').slice(0, 8).toUpperCase()}</p>
+        <p className="font-bold">INTERNAL RECEIPT — NOT AN OFFICIAL RECEIPT / INVOICE</p>
         {orderTypeLabel(orderType) && <p>Order Type: {orderTypeLabel(orderType)}</p>}
       </div>
       <div className="border-t border-dashed border-black my-1.5" />
@@ -1597,10 +1604,33 @@ function Receipt({ businessName, saleId, createdAt, customerName, items, subtota
         </div>
       ))}
       <div className="border-t border-dashed border-black my-1.5" />
-      <div className="flex justify-between">
-        <span>Subtotal</span>
-        <span>{formatPHP(subtotal)}</span>
-      </div>
+      {discounts.length > 0 ? (
+        <>
+          <div className="flex justify-between">
+            <span>Gross Amount</span>
+            <span>{formatPHP(subtotal)}</span>
+          </div>
+          {discounts.map((d, i) => (
+            <div key={i} className="mt-1">
+              <div className="flex justify-between">
+                <span>{d.type === 'senior' ? 'SC' : 'PWD'} Discount ({DISCOUNT_RATE_PERCENT}%)</span>
+                <span>−{formatPHP(d.discount)}</span>
+              </div>
+              <p className="text-[10px] pl-2">{d.fullName}</p>
+              <p className="text-[10px] pl-2">{ID_TYPE_LABELS[d.idType]} {maskIdNumber(d.idNumber)}</p>
+            </div>
+          ))}
+          <div className="flex justify-between mt-1">
+            <span>Net Amount</span>
+            <span>{formatPHP(total)}</span>
+          </div>
+        </>
+      ) : (
+        <div className="flex justify-between">
+          <span>Subtotal</span>
+          <span>{formatPHP(subtotal)}</span>
+        </div>
+      )}
       {paymentMethod === 'cash' && amountReceived != null && (
         <>
           <div className="flex justify-between mt-1">
@@ -1697,6 +1727,147 @@ function AddOnPicker({ available, selected, onToggle, onAddCustom, onClose }) {
   )
 }
 
+// ─── SC / PWD discount (Checkout order summary) ────────────────────────────
+// One card per discounted person with the required details; the math and
+// every rule live in lib/discounts.ts (computeOrderDiscount → `result`).
+// Item mode: each person gets units of the cart lines that are theirs.
+// Shared meal: the cashier enters the number of diners instead.
+function newDiscountPerson() {
+  return { key: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`, type: '', fullName: '', idType: '', idNumber: '', idVerified: false, items: [] }
+}
+
+function ScPwdDiscountPanel({ cart, mode, onModeChange, diners, onDinersChange, people, onPeopleChange, result }) {
+  const eligibleLines = cart.filter(i => !isOrderCharge(i))
+  const updatePerson = (key, patch) => onPeopleChange(people.map(p => (p.key === key ? { ...p, ...patch } : p)))
+  const assignedQty = (person, lineId) => person.items.find(u => u.lineId === lineId)?.qty || 0
+  const assignedToOthers = (key, lineId) => people.filter(p => p.key !== key).reduce((sum, p) => sum + assignedQty(p, lineId), 0)
+  const setAssigned = (person, lineId, qty) => {
+    const others = person.items.filter(u => u.lineId !== lineId)
+    updatePerson(person.key, { items: qty > 0 ? [...others, { lineId, qty }] : others })
+  }
+
+  if (people.length === 0) {
+    return (
+      <button
+        type="button"
+        onClick={() => onPeopleChange([newDiscountPerson()])}
+        className="w-full py-2.5 rounded-xl text-xs font-medium border border-dashed border-[#ddcca6] text-[#7a6a50] hover:bg-[#fff9ea] transition-colors"
+      >
+        + SC / PWD discount
+      </button>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-[#e8ddc8] bg-[#fffcf5] p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-[#2c2416]">SC / PWD discount ({DISCOUNT_RATE_PERCENT}%)</p>
+        <button type="button" onClick={() => onPeopleChange([])} className="text-[10px] text-[#b85c42] hover:text-[#a04030]">Remove all</button>
+      </div>
+
+      {/* One mode per order */}
+      <div className="grid grid-cols-2 gap-1.5">
+        {[['items', 'Their items'], ['shared', 'Shared meal']].map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onModeChange(value)}
+            className={`py-1.5 rounded-lg text-[11px] font-medium transition-all ${mode === value ? 'bg-[#2c2416] text-[#ddcca6]' : 'border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {mode === 'shared' && (
+        <div>
+          <p className={labelClass}>Number of diners (everyone sharing)</p>
+          <input type="number" inputMode="numeric" min="1" step="1" placeholder="e.g. 4" value={diners} onChange={e => onDinersChange(e.target.value)} className={inputClass} />
+        </div>
+      )}
+
+      {people.map((person, index) => {
+        const computed = result.people[index]
+        return (
+          <div key={person.key} className="rounded-lg bg-white border border-[#f0e8d8] p-2.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e]">Customer {index + 1}</p>
+              <button type="button" onClick={() => onPeopleChange(people.filter(p => p.key !== person.key))} title="Remove" className="text-[#c4ae88] hover:text-[#b85c42]"><IconX /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {['senior', 'pwd'].map(type => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => updatePerson(person.key, { type, idType: ID_TYPES_FOR[type][0] })}
+                  className={`py-1.5 rounded-lg text-[11px] font-medium transition-all ${person.type === type ? 'bg-[#2c2416] text-[#ddcca6]' : 'border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'}`}
+                >
+                  {DISCOUNT_TYPE_LABELS[type]}
+                </button>
+              ))}
+            </div>
+            <input type="text" placeholder="Full name" value={person.fullName} onChange={e => updatePerson(person.key, { fullName: e.target.value })} className={inputClass} />
+            <select
+              value={person.idType}
+              disabled={!person.type}
+              onChange={e => updatePerson(person.key, { idType: e.target.value })}
+              className={`${inputClass} disabled:opacity-50`}
+            >
+              {!person.type && <option value="">ID type (choose SC or PWD first)</option>}
+              {(ID_TYPES_FOR[person.type] || []).map(t => <option key={t} value={t}>{ID_TYPE_LABELS[t]}</option>)}
+            </select>
+            <input type="text" placeholder="ID number" value={person.idNumber} onChange={e => updatePerson(person.key, { idNumber: e.target.value })} className={inputClass} />
+            <label className="flex items-center gap-2 text-xs text-[#2c2416]">
+              <input type="checkbox" checked={person.idVerified} onChange={e => updatePerson(person.key, { idVerified: e.target.checked })} className="w-4 h-4 accent-[#2c2416]" />
+              ID verified — I checked the ID in person
+            </label>
+
+            {mode === 'items' && (
+              <div className="space-y-1 pt-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e]">Their items</p>
+                {eligibleLines.map(line => {
+                  const mine = assignedQty(person, line.id)
+                  const available = line.quantity - assignedToOthers(person.key, line.id)
+                  return (
+                    <div key={line.id} className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-[#2c2416] truncate flex-1">{line.name} <span className="text-[#a8977e]">· {formatPHP(cartItemUnitPrice(line))}</span></span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button type="button" disabled={mine === 0} onClick={() => setAssigned(person, line.id, mine - 1)} className="w-6 h-6 rounded-md border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] disabled:opacity-30"><IconMinus /></button>
+                        <span className="w-8 text-center text-[11px] font-semibold text-[#2c2416]">{mine}/{line.quantity}</span>
+                        <button type="button" disabled={mine >= available} onClick={() => setAssigned(person, line.id, mine + 1)} className="w-6 h-6 rounded-md border border-[#e8ddc8] flex items-center justify-center text-[#7a6a50] disabled:opacity-30"><IconPlus /></button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {computed && computed.gross > 0 && (
+              <div className="flex justify-between text-[11px] text-[#7a6a50] pt-1 border-t border-[#f5edd6]">
+                <span>{mode === 'shared' ? `1 share of ${formatPHP(computed.covered.shareOf)}` : 'Covered'}: {formatPHP(computed.gross)}</span>
+                <span className="font-semibold text-[#2c2416]">−{formatPHP(computed.discount)}</span>
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      <button
+        type="button"
+        onClick={() => onPeopleChange([...people, newDiscountPerson()])}
+        className="w-full py-2 rounded-lg text-[11px] font-medium border border-dashed border-[#ddcca6] text-[#7a6a50] hover:bg-[#fff9ea] transition-colors"
+      >
+        + Add another SC / PWD customer
+      </button>
+
+      {!result.ok && (
+        <ul className="text-[11px] text-[#b85c42] space-y-0.5">
+          {result.errors.map((e, i) => <li key={i}>• {e}</li>)}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 // ─── Checkout Screen ──────────────────────────────────────────────────────────
 function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAddOns, onClearCart, onCharge, businessName, onNavigate, onLiveDetails, onLivePaid, onLiveReceipt, onLiveReset }) {
   const [customerName, setCustomerName] = useState('')
@@ -1710,6 +1881,16 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
   const [printingThermal, setPrintingThermal] = useState(false)
   const [thermalPrintError, setThermalPrintError] = useState('')
   const [addOnPickerFor, setAddOnPickerFor] = useState(null)
+  const [discountMode, setDiscountMode] = useState('items')
+  const [diners, setDiners] = useState('')
+  const [discountPeople, setDiscountPeople] = useState([])
+  const resetDiscount = () => { setDiscountMode('items'); setDiners(''); setDiscountPeople([]) }
+
+  // An emptied cart ends the order — SC/PWD details must never carry over
+  // to the next customer (the paid screen reads completedSale, not these).
+  useEffect(() => {
+    if (cart.length === 0) resetDiscount()
+  }, [cart.length])
 
   const addOnCatalog = items.filter(p => p.category === 'Drink Add-ons' || p.category === 'Food Add-ons')
 
@@ -1730,20 +1911,39 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
   }
 
   const subtotal = cart.reduce((sum, i) => sum + cartItemUnitPrice(i) * i.quantity, 0)
-  const total = subtotal
+  const scPwd = computeOrderDiscount({
+    cart: cart.map(i => ({ id: i.id, name: i.name, price: i.price, quantity: i.quantity, addOns: i.addOns })),
+    mode: discountMode,
+    people: discountPeople,
+    diners: Number(diners) || 0,
+  })
+  // No stacking: an order gets one discount, whichever is higher. SC/PWD is
+  // the only one today; a future promo passes its amount to pickHigherDiscount.
+  const appliedDiscount = discountPeople.length > 0 && scPwd.ok && pickHigherDiscount(scPwd.discountTotal) === 'sc_pwd' ? scPwd : null
+  // Details started but not complete/valid: charging waits until they are
+  // (or the cashier removes the discount).
+  const discountIncomplete = discountPeople.length > 0 && !scPwd.ok
+  const total = appliedDiscount ? appliedDiscount.orderNet : subtotal
+  const receiptDiscounts = appliedDiscount
+    ? appliedDiscount.people.map(p => ({ type: p.person.type, fullName: p.person.fullName.trim(), idType: p.person.idType, idNumber: p.person.idNumber.trim(), discount: p.discount }))
+    : []
 
   const amountReceivedNum = parseFloat(amountReceived) || 0
-  const change = amountReceivedNum - total
+  // Rounded to the centavo: discounted totals make float drift likely.
+  const change = Math.round((amountReceivedNum - total) * 100) / 100
   const cashInsufficient = paymentMethod === 'cash' && (amountReceived === '' || amountReceivedNum < total)
 
   // Customer Display: order type and cash tendered as they're entered.
+  // The SC/PWD discount goes over as an amount only (never names or IDs),
+  // and only once its details are complete.
+  const liveDiscount = appliedDiscount?.discountTotal || 0
   useEffect(() => {
-    onLiveDetails?.({ orderType, paymentMethod, amountReceived })
+    onLiveDetails?.({ orderType, paymentMethod, amountReceived, discount: liveDiscount })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderType, paymentMethod, amountReceived])
+  }, [orderType, paymentMethod, amountReceived, liveDiscount])
 
   const handleCharge = async () => {
-    if (cashInsufficient || !orderType) return
+    if (cashInsufficient || !orderType || discountIncomplete) return
     setCharging(true)
     setChargeError('')
     const resolvedCustomerName = customerName.trim() || 'Walk-in'
@@ -1756,6 +1956,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
         changeGiven: paymentMethod === 'cash' ? change : undefined,
         orderType,
+        discount: appliedDiscount,
       })
       setCompletedSale({
         id: sale?.id,
@@ -1764,6 +1965,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
         items: cart.map(i => ({ name: i.name, qty: i.quantity, price: i.price, category: i.category, note: i.note?.trim() || undefined, addOns: i.addOns })),
         subtotal,
         total,
+        discounts: receiptDiscounts,
         paymentMethod,
         amountReceived: paymentMethod === 'cash' ? amountReceivedNum : undefined,
         change: paymentMethod === 'cash' ? change : undefined,
@@ -1798,6 +2000,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
         items: completedSale.items,
         subtotal: completedSale.subtotal,
         total: completedSale.total,
+        discounts: completedSale.discounts,
         paymentMethod: completedSale.paymentMethod,
         amountReceived: completedSale.amountReceived,
         change: completedSale.change,
@@ -1855,7 +2058,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
             {printingThermal ? 'Printing…' : 'Print Thermal Receipt'}
           </button>
           <button
-            onClick={() => { onClearCart(); onLiveReset?.(); setPaid(false); setCustomerName(''); setOrderType(''); setAmountReceived(''); setCompletedSale(null); onNavigate('products') }}
+            onClick={() => { onClearCart(); onLiveReset?.(); setPaid(false); setCustomerName(''); setOrderType(''); setAmountReceived(''); resetDiscount(); setCompletedSale(null); onNavigate('products') }}
             className="px-8 py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-medium hover:bg-[#3d3220] transition-colors"
           >
             New Order
@@ -1871,6 +2074,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
             items={completedSale.items}
             subtotal={completedSale.subtotal}
             total={completedSale.total}
+            discounts={completedSale.discounts}
             paymentMethod={completedSale.paymentMethod}
             amountReceived={completedSale.amountReceived}
             change={completedSale.change}
@@ -1996,13 +2200,33 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
             {/* Totals */}
             <div className="space-y-2.5 py-4 border-t border-b border-[#f5edd6] mb-4">
               <div className="flex justify-between text-sm text-[#7a6a50]">
-                <span>Subtotal ({cart.reduce((s, i) => s + i.quantity, 0)} items)</span>
+                <span>{appliedDiscount ? 'Gross' : 'Subtotal'} ({cart.reduce((s, i) => s + i.quantity, 0)} items)</span>
                 <span>{formatPHP(subtotal)}</span>
               </div>
+              {appliedDiscount?.people.map((p, i) => (
+                <div key={i} className="flex justify-between text-sm text-[#7a6a50]">
+                  <span className="truncate pr-2">{p.person.type === 'senior' ? 'SC' : 'PWD'} {DISCOUNT_RATE_PERCENT}% · {p.person.fullName.trim()}</span>
+                  <span className="shrink-0">−{formatPHP(p.discount)}</span>
+                </div>
+              ))}
               <div className="flex justify-between font-semibold text-[#2c2416]">
                 <span>Total</span>
                 <span style={{ fontFamily: 'var(--font-serif)' }} className="text-lg">{formatPHP(total)}</span>
               </div>
+            </div>
+
+            {/* SC / PWD discount */}
+            <div className="mb-5">
+              <ScPwdDiscountPanel
+                cart={cart}
+                mode={discountMode}
+                onModeChange={setDiscountMode}
+                diners={diners}
+                onDinersChange={setDiners}
+                people={discountPeople}
+                onPeopleChange={setDiscountPeople}
+                result={scPwd}
+              />
             </div>
 
             {/* Order type — required before checkout can complete */}
@@ -2078,7 +2302,7 @@ function Checkout({ items, cart, onUpdateQty, onRemove, onUpdateNote, onUpdateAd
             {/* Charge button */}
             <button
               onClick={handleCharge}
-              disabled={charging || cashInsufficient || !orderType}
+              disabled={charging || cashInsufficient || !orderType || discountIncomplete}
               className="w-full py-4 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold text-base hover:bg-[#3d3220] active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
             >
               {charging && <Spinner className="w-4 h-4" />}
@@ -3026,13 +3250,15 @@ function EditTransactionModal({ sale, items: lineItems, onClose, onSave }) {
   )
 }
 
-function Reports({ items, businessName, userEmail, financials, onVoidTransaction, onEditTransaction }) {
+function Reports({ items, businessName, userEmail, financials, onVoidTransaction, onEditTransaction, onOpenDiscountLog }) {
   const [sales, setSales] = useState([])
   const [saleItems, setSaleItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [voidTarget, setVoidTarget] = useState(null)
   const [editPasswordTarget, setEditPasswordTarget] = useState(null)
+  // A discounted sale can't be edited (see editSale) — explained instead.
+  const [editBlockedSale, setEditBlockedSale] = useState(null)
   const [editingSale, setEditingSale] = useState(null)
   const [reprintTarget, setReprintTarget] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
@@ -3295,6 +3521,9 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
   const netProfit = totalRevenue - totalCOGS
   const profitMargin = totalRevenue ? (netProfit / totalRevenue) * 100 : 0
   const cogsSummary = { totalRevenue, netProfit, margin: profitMargin }
+  // SC/PWD discounts on counted sales only (activeSales: voided and staff
+  // orders excluded, same order-type filter as every other figure here).
+  const totalDiscountsGiven = activeSales.reduce((sum, s) => sum + (s.discount_total || 0), 0)
 
   if (loading) {
     return (
@@ -3339,6 +3568,12 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
         <div className="flex items-center gap-2 flex-wrap">
           <FinancialRevealToggle revealed={financials.revealed} onToggle={financials.toggle} />
           <button
+            onClick={onOpenDiscountLog}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors"
+          >
+            <IconList /> SC/PWD Log
+          </button>
+          <button
             onClick={() => exportSalesToExcel(activeSales, businessName)}
             disabled={activeSales.length === 0}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
@@ -3363,13 +3598,14 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
       </div>
 
       {/* Transaction stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         {[
           { label: 'Total Transaction Count', value: String(totalTransactionCount), icon: '🧾' },
           { label: 'Avg Order Value', value: financials.money(avgOrderValue), icon: '💵' },
           { label: 'Total Drinks Qty', value: String(totalDrinksQty), icon: '☕' },
           { label: 'Total Pastry/Food Qty', value: String(totalPastryFoodQty), icon: '🥐' },
           { label: 'Total Revenue', value: financials.money(totalRevenue), icon: '📈' },
+          { label: 'Discounts Given (SC/PWD)', value: financials.money(totalDiscountsGiven), icon: '🪪' },
         ].map((stat, i) => (
           <div key={i} className="bg-white rounded-2xl p-5 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
             <div className="flex items-center justify-between mb-3">
@@ -3717,6 +3953,9 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
                                 {isVoided && sale.voided_at && (
                                   <p className="text-[10px] text-[#b85c42] mt-0.5">Voided {new Date(sale.voided_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
                                 )}
+                                {sale.discount_total != null && (
+                                  <p className="text-[10px] text-[#7a6a50] mt-0.5">SC/PWD discount −{formatPHP(sale.discount_total)}</p>
+                                )}
                                 {!isVoided && sale.edited_at && (
                                   <p className="text-[10px] text-[#c49a3c] mt-0.5">Edited {new Date(sale.edited_at).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>
                                 )}
@@ -3731,7 +3970,7 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
                               <span className={`text-sm font-semibold text-[#2c2416] ${isVoided ? 'line-through' : ''}`}>{formatPHP(sale.total)}</span>
                               <TransactionMenu
                                 onReprint={() => setReprintTarget(sale)}
-                                onEdit={!isVoided ? () => setEditPasswordTarget(sale) : undefined}
+                                onEdit={!isVoided ? () => (sale.discount_total != null ? setEditBlockedSale(sale) : setEditPasswordTarget(sale)) : undefined}
                                 onVoid={!isVoided ? () => setVoidTarget(sale) : undefined}
                               />
                             </div>
@@ -3779,6 +4018,17 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
       />
     )}
 
+    {editBlockedSale && (
+      <Modal title="Can't edit this order" onClose={() => setEditBlockedSale(null)}>
+        <p className="text-sm text-[#7a6a50] mb-5">
+          This order has an SC/PWD discount ({formatPHP(editBlockedSale.discount_total)}), so its items and amounts can't be edited — changing them would no longer match the discount record. To correct it, void this order and ring it up again.
+        </p>
+        <div className="flex justify-end">
+          <button onClick={() => setEditBlockedSale(null)} className="px-5 py-2.5 rounded-xl bg-[#2c2416] text-[#ddcca6] text-sm font-medium hover:bg-[#3d3220] transition-colors">OK</button>
+        </div>
+      </Modal>
+    )}
+
     {editingSale && (
       <EditTransactionModal
         sale={editingSale}
@@ -3796,6 +4046,194 @@ function Reports({ items, businessName, userEmail, financials, onVoidTransaction
     )}
 
     </>
+  )
+}
+
+// ─── SC/PWD Discount Log ──────────────────────────────────────────────────
+// One row per discounted person, with FULL ID numbers (receipts only ever
+// show them masked), so the page is gated by re-entering the account
+// password on every visit. Voided sales are left out (countsTowardReports).
+function localDayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function discountCoveredLabel(row) {
+  if (row.mode === 'shared') {
+    const c = row.covered || {}
+    return `1 of ${c.diners} diners (share of ${formatPHP(c.shareOf)})`
+  }
+  return (Array.isArray(row.covered) ? row.covered : []).map(c => `${c.qty}× ${c.name}`).join(', ')
+}
+
+// Excel would run a cell starting with = + - @ as a formula — names and ID
+// numbers are typed by staff, so those get a leading apostrophe.
+function csvCell(value) {
+  let text = value == null ? '' : String(value)
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+function exportDiscountLogToCSV(rows, businessName, from, to) {
+  const header = ['Date & Time', 'Order #', 'Sale ID', 'Cashier', 'Discount Type', 'Full Name', 'ID Type', 'ID Number', 'ID Verified', 'Mode', 'Covered', 'Gross', 'Discount', 'Net']
+  const lines = rows.map(r => [
+    new Date(r.createdAt).toLocaleString('en-PH'),
+    String(r.saleId).slice(0, 8).toUpperCase(),
+    r.saleId,
+    r.cashier,
+    DISCOUNT_TYPE_LABELS[r.type] || r.type,
+    r.fullName,
+    ID_TYPE_LABELS[r.idType] || r.idType,
+    r.idNumber,
+    r.idVerified ? 'Yes' : 'No',
+    r.mode === 'shared' ? 'Shared meal' : 'Items',
+    discountCoveredLabel(r),
+    r.gross.toFixed(2),
+    r.discount.toFixed(2),
+    r.net.toFixed(2),
+  ].map(csvCell).join(','))
+  // BOM so Excel opens it as UTF-8 (names with ñ, etc.).
+  const blob = new Blob(['﻿' + [header.join(','), ...lines].join('\r\n')], { type: 'text/csv;charset=utf-8' })
+  saveAs(blob, `${businessName || 'sc-pwd'}-sc-pwd-discount-log-${from}-to-${to}.csv`)
+}
+
+function DiscountLog({ businessName, userEmail, onBack }) {
+  const [unlocked, setUnlocked] = useState(false)
+  const today = new Date()
+  const [from, setFrom] = useState(localDayKey(new Date(today.getFullYear(), today.getMonth(), 1)))
+  const [to, setTo] = useState(localDayKey(today))
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const rangeInvalid = !from || !to || from > to
+  const load = () => {
+    if (!unlocked || rangeInvalid) return
+    const toExclusive = new Date(`${to}T00:00:00`)
+    toExclusive.setDate(toExclusive.getDate() + 1)
+    setLoading(true)
+    setError('')
+    api.fetchDiscountLog({ fromIso: new Date(`${from}T00:00:00`).toISOString(), toIso: toExclusive.toISOString(), type: typeFilter })
+      .then(setRows)
+      .catch(err => setError(err.message || 'Could not load the discount log'))
+      .finally(() => setLoading(false))
+  }
+  useEffect(load, [unlocked, from, to, typeFilter])
+
+  if (!unlocked) {
+    return (
+      <PasswordConfirmModal
+        title="SC/PWD Discount Log"
+        message="This log shows customers' full names and ID numbers. Re-enter your account password to open it."
+        confirmLabel="Open log"
+        onConfirm={async password => {
+          await verifyStaffPassword(userEmail, password)
+          setUnlocked(true)
+        }}
+        onClose={onBack}
+      />
+    )
+  }
+
+  const sum = key => rows.reduce((total, r) => total + r[key], 0)
+  const countOf = type => rows.filter(r => r.type === type).length
+
+  return (
+    <div className="p-4 md:p-6 lg:p-8 max-w-6xl mx-auto">
+      <div className="flex items-start justify-between gap-4 flex-wrap mb-6">
+        <div>
+          <button onClick={onBack} className="text-xs text-[#a8977e] hover:text-[#2c2416] mb-2">← Back to Reports</button>
+          <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-semibold text-[#2c2416]">SC/PWD Discount Log</h1>
+          <p className="text-sm text-[#a8977e] mt-0.5">Senior Citizen and PWD discounts given · voided orders excluded</p>
+        </div>
+        <button
+          onClick={() => exportDiscountLogToCSV(rows, businessName, from, to)}
+          disabled={rows.length === 0 || loading}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6] transition-colors disabled:opacity-50"
+        >
+          <IconDownload /> CSV
+        </button>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-end gap-3 mb-5">
+        <div>
+          <p className={labelClass}>From</p>
+          <input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <p className={labelClass}>To</p>
+          <input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} className={inputClass} />
+        </div>
+        <div className="flex gap-1.5">
+          {[['all', 'All'], ['senior', 'Senior Citizen'], ['pwd', 'PWD']].map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => setTypeFilter(value)}
+              className={`px-3.5 py-2.5 rounded-xl text-xs font-medium transition-all ${typeFilter === value ? 'bg-[#2c2416] text-[#ddcca6]' : 'bg-white border border-[#e8ddc8] text-[#7a6a50] hover:border-[#ddcca6]'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {rangeInvalid && <p className="text-xs text-[#b85c42] mb-4">Choose a From date on or before the To date.</p>}
+
+      {/* Totals */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {[
+          { label: 'Customers', value: `${rows.length}`, sub: `${countOf('senior')} SC · ${countOf('pwd')} PWD` },
+          { label: 'Gross (covered)', value: formatPHP(sum('gross')) },
+          { label: 'Discounts Given', value: formatPHP(sum('discount')) },
+          { label: 'Net', value: formatPHP(sum('net')) },
+        ].map(stat => (
+          <div key={stat.label} className="bg-white rounded-2xl p-5 border border-[#f0e8d8] shadow-[0_1px_8px_rgba(44,36,22,0.05)]">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] mb-3">{stat.label}</p>
+            <p style={{ fontFamily: 'var(--font-serif)' }} className="text-2xl font-bold text-[#2c2416]">{stat.value}</p>
+            {stat.sub && <p className="text-xs text-[#a8977e] mt-1">{stat.sub}</p>}
+          </div>
+        ))}
+      </div>
+
+      {loading ? (
+        <LoadingBlock label="Loading discount log…" />
+      ) : error ? (
+        <ErrorBlock message={error} onRetry={load} />
+      ) : rows.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-[#f0e8d8] p-10 text-center text-sm text-[#a8977e]">No SC/PWD discounts in this period</div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-[#f0e8d8] shadow-[0_1px_12px_rgba(44,36,22,0.06)] overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[10px] font-semibold uppercase tracking-wider text-[#a8977e] border-b border-[#f5edd6]">
+                {['Date & Time', 'Order #', 'Cashier', 'Type', 'Name', 'ID', 'Covered', 'Gross', 'Discount', 'Net'].map(h => (
+                  <th key={h} className={`px-4 py-3 whitespace-nowrap ${['Gross', 'Discount', 'Net'].includes(h) ? 'text-right' : ''}`}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#f5edd6]">
+              {rows.map(r => (
+                <tr key={r.id} className="align-top text-[#2c2416]">
+                  <td className="px-4 py-3 whitespace-nowrap text-xs">{new Date(r.createdAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{String(r.saleId).slice(0, 8).toUpperCase()}</td>
+                  <td className="px-4 py-3 text-xs">{r.cashier}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-xs">{DISCOUNT_TYPE_LABELS[r.type] || r.type}</td>
+                  <td className="px-4 py-3 text-xs font-medium">{r.fullName}</td>
+                  <td className="px-4 py-3 text-xs whitespace-nowrap">
+                    <span className="text-[#a8977e]">{ID_TYPE_LABELS[r.idType] || r.idType}</span><br />
+                    <span className="font-mono">{r.idNumber}</span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[#7a6a50] min-w-[10rem]">{discountCoveredLabel(r)}</td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">{formatPHP(r.gross)}</td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap text-[#b85c42]">−{formatPHP(r.discount)}</td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap font-semibold">{formatPHP(r.net)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -4464,8 +4902,8 @@ export default function App() {
     setItems(prev => prev.filter(i => i.id !== id))
   }
 
-  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType }) => {
-    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType })
+  const chargeSale = async ({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType, discount }) => {
+    const sale = await api.recordSale({ customerName, items: saleItems, total, paymentMethod, amountReceived, changeGiven, orderType, discount })
     // Reflect the sold products' own stock decrement locally right away so
     // Products/Inventory update without waiting on a round trip. Ingredient
     // stock cascaded through recipes (applyRecipeStockDelta) isn't known
@@ -4650,7 +5088,8 @@ export default function App() {
       case 'staffOrdersLog': return <StaffOrdersLog businessName={settings.businessName} userEmail={session?.user?.email} onVoidTransaction={voidTransaction} />
       case 'inventory': return <Inventory items={items} itemsLoading={itemsLoading} itemsError={itemsError} onRetryItems={refetchItems} onAddItem={addItem} onUpdateItem={updateItem} onUpdateStock={updateStock} onDeleteItem={deleteItem} />
       case 'customers': return <Customers businessName={settings.businessName} />
-      case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} financials={financials} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} />
+      case 'reports': return <Reports items={items} businessName={settings.businessName} userEmail={session?.user?.email} financials={financials} onVoidTransaction={voidTransaction} onEditTransaction={editTransaction} onOpenDiscountLog={() => setScreen('discountLog')} />
+      case 'discountLog': return <DiscountLog businessName={settings.businessName} userEmail={session?.user?.email} onBack={() => setScreen('reports')} />
       case 'settings': return <Settings settings={settings} onUpdateSettings={setSettings} userEmail={session?.user?.email} isRegister={isRegister} onSetRegister={handleSetRegister} />
       default: return null
     }
@@ -4660,7 +5099,9 @@ export default function App() {
     ? 'Staff Order'
     : activeScreen === 'staffOrdersLog'
       ? 'Staff Orders Log'
-      : NAV_ITEMS.find(n => n.id === activeScreen)?.label || ''
+      : activeScreen === 'discountLog'
+        ? 'SC/PWD Discount Log'
+        : NAV_ITEMS.find(n => n.id === activeScreen)?.label || ''
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#fff9ea]">
