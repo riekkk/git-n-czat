@@ -4620,11 +4620,123 @@ function Settings({ settings, onUpdateSettings, userEmail, isRegister, onSetRegi
 }
 
 // ─── Login screen ───────────────────────────────────────────────────────────
+// Supabase's reset email links back here with `type=recovery` in the URL
+// hash. Read it at load, before the client clears the hash, so the
+// "Set new password" screen shows even if the PASSWORD_RECOVERY event fires
+// before App subscribes to auth changes.
+const OPENED_FROM_RESET_LINK = typeof window !== 'undefined' && /type=recovery/.test(window.location.hash)
+
+function AuthCard({ title, children }) {
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-[#fff9ea] p-4">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-[#f0e8d8] p-8">
+        <div className="flex flex-col items-center mb-6">
+          <img src={dimpzCafeLogo} alt="Dimp'z Cafe" className="w-14 h-14 object-contain mb-3" />
+          <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-xl font-semibold text-[#2c2416]">{title}</h1>
+          <p className="text-xs text-[#a8977e] mt-1 tracking-widest uppercase">Dimp'z Cafe Point of Sale</p>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function ForgotPassword({ initialEmail, onBack }) {
+  const [email, setEmail] = useState(initialEmail)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [sent, setSent] = useState(false)
+
+  const submit = async e => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin })
+    setLoading(false)
+    if (error) setError(error.message)
+    else setSent(true)
+  }
+
+  return (
+    <AuthCard title="Reset Password">
+      {sent ? (
+        <p className="text-sm text-[#2c2416] text-center">
+          If <span className="font-semibold">{email}</span> has a staff account, a reset link is on its way. Open it on this device to set a new password.
+        </p>
+      ) : (
+        <form onSubmit={submit} className="space-y-4">
+          <p className="text-xs text-[#a8977e]">Enter your staff email and we'll send you a link to set a new password.</p>
+          <div>
+            <label className={labelClass}>Email</label>
+            <input type="email" required autoComplete="username" className={inputClass} value={email} onChange={e => setEmail(e.target.value)} placeholder="you@dimpzcafe.com" />
+          </div>
+          {error && <p className="text-xs text-[#b85c42]">{error}</p>}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+          >
+            {loading && <Spinner className="w-4 h-4" />}
+            {loading ? 'Sending…' : 'Send Reset Link'}
+          </button>
+        </form>
+      )}
+      <button type="button" onClick={onBack} className="w-full text-xs text-[#a8977e] hover:text-[#2c2416] mt-6">Back to sign in</button>
+    </AuthCard>
+  )
+}
+
+// Shown after opening the reset link: the link already signed the user in,
+// so this just sets the new password on that session.
+function SetNewPassword({ onDone }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const submit = async e => {
+    e.preventDefault()
+    setError('')
+    if (password.length < 6) return setError('Password must be at least 6 characters.')
+    if (password !== confirm) return setError("Passwords don't match.")
+    setLoading(true)
+    const { error } = await supabase.auth.updateUser({ password })
+    setLoading(false)
+    if (error) setError(error.message)
+    else onDone()
+  }
+
+  return (
+    <AuthCard title="Set New Password">
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label className={labelClass}>New password</label>
+          <input type="password" required autoComplete="new-password" className={inputClass} value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
+        </div>
+        <div>
+          <label className={labelClass}>Confirm new password</label>
+          <input type="password" required autoComplete="new-password" className={inputClass} value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="••••••••" />
+        </div>
+        {error && <p className="text-xs text-[#b85c42]">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+        >
+          {loading && <Spinner className="w-4 h-4" />}
+          {loading ? 'Saving…' : 'Save Password'}
+        </button>
+      </form>
+    </AuthCard>
+  )
+}
+
 function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [forgot, setForgot] = useState(false)
 
   const submit = async e => {
     e.preventDefault()
@@ -4639,36 +4751,34 @@ function Login() {
     // this component unmounts — no need to reset loading here.
   }
 
+  if (forgot) return <ForgotPassword initialEmail={email} onBack={() => setForgot(false)} />
+
   return (
-    <div className="flex items-center justify-center min-h-screen bg-[#fff9ea] p-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-[#f0e8d8] p-8">
-        <div className="flex flex-col items-center mb-6">
-          <img src={dimpzCafeLogo} alt="Dimp'z Cafe" className="w-14 h-14 object-contain mb-3" />
-          <h1 style={{ fontFamily: 'var(--font-serif)' }} className="text-xl font-semibold text-[#2c2416]">Staff Login</h1>
-          <p className="text-xs text-[#a8977e] mt-1 tracking-widest uppercase">Dimp'z Cafe Point of Sale</p>
+    <AuthCard title="Staff Login">
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label className={labelClass}>Email</label>
+          <input type="email" required autoComplete="username" className={inputClass} value={email} onChange={e => setEmail(e.target.value)} placeholder="you@dimpzcafe.com" />
         </div>
-        <form onSubmit={submit} className="space-y-4">
-          <div>
-            <label className={labelClass}>Email</label>
-            <input type="email" required autoComplete="username" className={inputClass} value={email} onChange={e => setEmail(e.target.value)} placeholder="you@dimpzcafe.com" />
-          </div>
-          <div>
+        <div>
+          <div className="flex items-center justify-between">
             <label className={labelClass}>Password</label>
-            <input type="password" required autoComplete="current-password" className={inputClass} value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
+            <button type="button" onClick={() => setForgot(true)} className="text-xs text-[#a8977e] hover:text-[#2c2416]">Forgot password?</button>
           </div>
-          {error && <p className="text-xs text-[#b85c42]">{error}</p>}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
-          >
-            {loading && <Spinner className="w-4 h-4" />}
-            {loading ? 'Signing in…' : 'Sign In'}
-          </button>
-        </form>
-        <p className="text-xs text-[#a8977e] text-center mt-6">Staff accounts are created by your manager. Contact them if you need access.</p>
-      </div>
-    </div>
+          <input type="password" required autoComplete="current-password" className={inputClass} value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
+        </div>
+        {error && <p className="text-xs text-[#b85c42]">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full py-3 rounded-xl bg-[#2c2416] text-[#ddcca6] font-semibold hover:bg-[#3d3220] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+        >
+          {loading && <Spinner className="w-4 h-4" />}
+          {loading ? 'Signing in…' : 'Sign In'}
+        </button>
+      </form>
+      <p className="text-xs text-[#a8977e] text-center mt-6">Staff accounts are created by your manager. Contact them if you need access.</p>
+    </AuthCard>
   )
 }
 
@@ -4738,6 +4848,7 @@ function PrintProblemNotices() {
 
 export default function App() {
   const [session, setSession] = useState(undefined) // undefined = checking, null = signed out
+  const [recoveringPassword, setRecoveringPassword] = useState(OPENED_FROM_RESET_LINK)
   const [screen, setScreen] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showDrawerPassword, setShowDrawerPassword] = useState(false)
@@ -4784,7 +4895,8 @@ export default function App() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (event === 'PASSWORD_RECOVERY') setRecoveringPassword(true)
       setSession(newSession)
     })
     return () => listener.subscription.unsubscribe()
@@ -5053,6 +5165,10 @@ export default function App() {
 
   const cartCount = cart.reduce((s, i) => s + i.quantity, 0)
   const staffCartCount = staffCart.reduce((s, i) => s + i.quantity, 0)
+
+  if (session && recoveringPassword) {
+    return <SetNewPassword onDone={() => setRecoveringPassword(false)} />
+  }
 
   if (session === undefined || (session && roleCheckedFor !== session.user.id)) {
     return (
