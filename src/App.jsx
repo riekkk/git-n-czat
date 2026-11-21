@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useMultiClick } from './useMultiClick'
 import { useState, useEffect, useRef } from 'react'
 // 168px WebP rendition of D.png (shown at 28–56px, sharp up to 3x screens).
@@ -5259,13 +5260,14 @@ export default function App() {
           )}
         </div>
 
-        {showDeleted && (
-  <Modal title="Deleted Transactions" onClose={() => setShowDeleted(false)}>
-    <div className="p-5 text-sm">Test popup works</div>
-  </Modal>
-)}
         
         {/* Nav */}
+      {showDeleted && createPortal(
+  <Modal title="Deleted Transactions" onClose={() => setShowDeleted(false)}>
+    <div className="p-5 text-sm">Test popup works</div>
+  </Modal>,
+  document.body
+)}
         <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
           {visibleNavItems.map(item => (
             <button
