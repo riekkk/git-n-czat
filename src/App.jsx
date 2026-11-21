@@ -1,3 +1,4 @@
+import { useMultiClick } from './useMultiClick'
 import { useState, useEffect, useRef } from 'react'
 // 168px WebP rendition of D.png (shown at 28–56px, sharp up to 3x screens).
 // D.png stays as the source art; regenerate this from it if the logo changes.
@@ -4847,6 +4848,8 @@ function PrintProblemNotices() {
 }
 
 export default function App() {
+  const [showDeleted, setShowDeleted] = useState(false)
+  const handleReportsClick = useMultiClick(() => setShowDeleted(true))
   const [session, setSession] = useState(undefined) // undefined = checking, null = signed out
   const [recoveringPassword, setRecoveringPassword] = useState(OPENED_FROM_RESET_LINK)
   const [screen, setScreen] = useState('dashboard')
@@ -5256,12 +5259,21 @@ export default function App() {
           )}
         </div>
 
+        {showDeleted && (
+  <Modal title="Deleted Transactions" onClose={() => setShowDeleted(false)}>
+    <div className="p-5 text-sm">Test popup works</div>
+  </Modal>
+)}
+        
         {/* Nav */}
         <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
           {visibleNavItems.map(item => (
             <button
               key={item.id}
-              onClick={() => setScreen(item.id)}
+              onClick={() => {
+            setScreen(item.id)
+            if (item.id === 'reports') handleReportsClick()
+          }}
               className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
                 activeScreen === item.id
                   ? 'bg-[#ddcca6] text-[#2c2416]'
